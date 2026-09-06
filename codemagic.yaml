@@ -34,6 +34,7 @@ workflows:
       - name: Nuitka 编译为 .app
         script: |
           set -euo pipefail
+          VER="$(python3 -c 'import sand_patch; print(sand_patch.TOOL_VERSION)')"
           ICON_ARG=""
           [ -f icon.icns ] && ICON_ARG="--macos-app-icon=icon.icns"
           python3 -m nuitka --standalone --assume-yes-for-downloads \
@@ -44,7 +45,7 @@ workflows:
             --enable-plugin=pywebview \
             --include-data-dir=web=web \
             --company-name="SandClaimer" --product-name="Sand Claimer" \
-            --product-version=1.0.0 \
+            --product-version=$VER \
             --output-dir=build-mac \
             app.py
       - name: 打成 DMG

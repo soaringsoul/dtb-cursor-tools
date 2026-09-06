@@ -9,6 +9,8 @@
 
 **Commit 约定：** 仅当用户明确要求 commit 时执行各任务的 git commit 步骤；未要求则跳过 commit，继续下一任务。
 
+**落地：** 功能已随 1.2.1 合入；1.2.2 用 `test_login_sessions.py` 做不联网回归。第二期（踢会话等）见迭代 PRD 1.5.0，本计划无对应任务。
+
 ---
 
 ## 文件
@@ -641,14 +643,14 @@ python3 -m unittest test_login_sessions.py -q
 
 ## 规格覆盖对照
 
-| 规格章节 | 任务 |
-|----------|------|
-| §0 / §1 只读验证触发、不用 API key、不踢 | 任务 2、5；无 revoke 代码 |
-| §2 接口契约 | 任务 2 `SESSIONS_URL` + GET cookie |
-| §3 架构并发 + 本机标记 | 任务 2 `max_workers=6`；任务 3–5 |
-| §4 数据形状 | 任务 1–2 |
-| §5 UI pill / 弹层 / 刷新时机 / 帮助 | 任务 4–5 |
-| §6 错误处理、alive 不跟 sessions | 任务 1 `test_sessions_401_does_not_kill_account`、任务 2 |
-| §7 测试文件 | 任务 1 |
-| §8 README | 任务 6 |
-| §9 第二期 | 无任务（正确） |
+| 规格章节 | 任务 | 落地 |
+|----------|------|------|
+| §0 / §1 只读验证触发、不用 API key、不踢 | 任务 2、5；无 revoke 代码 | 是 |
+| §2 接口契约 | 任务 2 `SESSIONS_URL` + GET cookie | 是 |
+| §3 架构并发 + 本机标记 | 任务 2 `max_workers=6`；任务 3–5 | 是 |
+| §4 数据形状 | 任务 1–2 | 是 |
+| §5 UI pill / 弹层 / 刷新时机 / 帮助 | 任务 4–5 | 是 |
+| §6 错误处理、alive 不跟 sessions | 任务 1 `test_sessions_401_does_not_kill_account`、任务 2 | 是 |
+| §7 测试文件 | 任务 1 | 是（`test_login_sessions.py`） |
+| §8 README | 任务 6 | 是 |
+| §9 第二期 | 无任务（正确） | 故意未做 |

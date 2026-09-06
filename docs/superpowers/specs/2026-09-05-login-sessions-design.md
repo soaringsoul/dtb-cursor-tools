@@ -1,7 +1,7 @@
 # SandClaimer 登录会话识别 · 设计规格
 
 **日期**：2026-09-05  
-**状态**：待用户审阅书面规格  
+**状态**：已落地（1.2.1；质检包 1.2.2 补了对照单测）  
 **范围**：`dtb_cusor-bot-sand` 第一期（方案 1，只读）  
 **代号**：login-sessions
 
@@ -272,3 +272,18 @@ User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 - 接口、鉴权、UI、错误、测试、文件清单与 §0 决策一致。
 - 范围可被一份实现计划覆盖。
 - 「本机」指定为账号级匹配，不假装能对应到某一条 `sessionId`。
+
+---
+
+## 11. 落地对照（1.2.1 功能 / 1.2.2 质检）
+
+| 成功标准 | 落地 |
+|---|---|
+| 验证后会话 pill（数量 + 客户端/网页） | `sand_api.get_status` + `web/app.js` |
+| 弹层明细；sessionId 默认前 8 位 | `#sessionMask` |
+| 「本机」pill 随探测 / 切号刷新 | `Api.local_identity()` |
+| sessions 失败不改 alive | `test_login_sessions.py` `test_sessions_401_does_not_kill_account` |
+| 失效号不打 sessions | `verify()` 早退 |
+| 无踢会话 / 无 crsr_ / 不编造 IP | 无 revoke 代码；规格 §9 仍属 1.5.0 |
+
+第二期未做（正确）。产品级下一包见 `docs/prd/2026-09-06-iteration-prd.md`。

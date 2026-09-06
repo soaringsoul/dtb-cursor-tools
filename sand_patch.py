@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 
-TOOL_VERSION = "1.2.1"
+TOOL_VERSION = "1.2.2"
 CONFIG_VERSION = 1
 
 SAND_CLIENT_MARKER = "/*SAND_CLIENT_MODE_V1*/"
