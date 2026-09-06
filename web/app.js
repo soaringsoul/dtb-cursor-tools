@@ -1280,12 +1280,13 @@ async function refreshPatch() {
   }
   if (versionMismatch) {
     // 版本不对：打补丁不会生效。醒目提示 + 直接给对应平台的下载按钮。
-    const req = res.requiredVersion || "3.18.9";
+    const req = res.requiredVersion || "3.18.9 / 3.18.25 / 3.19.13";
+    const dlVer = res.downloadVersion || "3.19.13";
     const dl = res.downloadUrl || "";
     const dlSys = res.downloadUrlSystem || "";
     info.innerHTML =
       `⚠ 需 Cursor ${req} 才能打补丁：当前 ${res.version || "?"} 不含 agent-host 锚点，打了也不生效。先装对应版本并关自动更新。 ` +
-      (dl ? `<button class="btn tiny primary" id="btnDlCursor">下载 Cursor ${req}</button> ` : "") +
+      (dl ? `<button class="btn tiny primary" id="btnDlCursor">下载 Cursor ${dlVer}</button> ` : "") +
       (dlSys ? `<button class="btn tiny" id="btnDlCursorSys">管理员版</button>` : "");
     const b1 = document.getElementById("btnDlCursor");
     if (b1) b1.onclick = () => downloadCursor(dl);
@@ -1327,19 +1328,20 @@ async function downloadCursor(url) {
 }
 
 async function doPatch() {
-  // 版本不对就先拦一下：3.18.9 之外没有 agent-host 锚点，打了也白打。
+  // 版本不对就先拦一下：已测试版本之外没有 agent-host 锚点，打了也白打。
   try {
     const st = await api().patch_status();
     if (st && st.ok && st.streamCapable === false) {
-      const req = st.requiredVersion || "3.18.9";
+      const req = st.requiredVersion || "3.18.9 / 3.18.25 / 3.19.13";
+      const dlVer = st.downloadVersion || "3.19.13";
       const dl = st.downloadUrl || "";
       const msg =
         `当前 Cursor ${st.version || ""} 没有 ${req} 的 agent-host 锚点：\n` +
         `打补丁不会生效，Sand 工具依然用不了。\n\n` +
-        `请先安装 Cursor ${req}（并关闭自动更新）：\n${dl}\n\n` +
-        `（取消后可点补丁面板的「下载 Cursor ${req}」按钮直接下载）\n\n仍要继续尝试吗？`;
+        `请先安装 Cursor ${dlVer}（并关闭自动更新）：\n${dl}\n\n` +
+        `（取消后可点补丁面板的「下载 Cursor ${dlVer}」按钮直接下载）\n\n仍要继续尝试吗？`;
       if (window.confirm(msg) === false) {
-        toast("已取消：请先安装 Cursor " + req + " 再打补丁");
+        toast("已取消：请先安装 Cursor " + dlVer + " 再打补丁");
         return;
       }
     }

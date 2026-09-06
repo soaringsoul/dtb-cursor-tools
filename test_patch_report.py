@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import patch_report
 import sand_patch as sp
-from test_sand_patch import VANILLA
+from test_sand_patch import VANILLA, VANILLA_319
 
 
 def _layout(target: Path) -> sp.CursorLayout:
@@ -43,6 +43,42 @@ class RuleStatusTest(unittest.TestCase):
         self.assertEqual(by_key["local_actions"]["status"], "pending")
         self.assertEqual(by_key["subagent_local"]["status"], "pending")
         self.assertEqual(by_key["client_type"]["status"], "pending")
+
+    def test_vanilla_319_anchors_pending(self):
+        target = Path("chunk.js")
+        rules = patch_report.rule_status(_layout(target), {target: VANILLA_319})
+        by_key = {r["key"]: r for r in rules}
+        for key in (
+            "managed_local_route",
+            "local_runtime_load",
+            "move_exec",
+            "local_actions",
+            "subagent_local",
+            "agent_host_identity",
+            "agent_host_enablement",
+        ):
+            self.assertEqual(by_key[key]["status"], "pending", key)
+            self.assertNotEqual(by_key[key]["status"], "missing", key)
+
+    def test_patched_319_applied(self):
+        patched, _stats = sp.apply_patch_to_content(VANILLA_319)
+        target = Path("chunk.js")
+        rules = patch_report.rule_status(_layout(target), {target: patched})
+        by_key = {r["key"]: r for r in rules}
+        self.assertEqual(by_key["managed_local_route"]["status"], "applied")
+        self.assertEqual(by_key["local_runtime_load"]["status"], "applied")
+        self.assertEqual(by_key["local_actions"]["status"], "applied")
+        self.assertEqual(by_key["subagent_local"]["status"], "applied")
+        self.assertEqual(by_key["move_exec"]["status"], "applied")
+        self.assertEqual(by_key["agent_host_identity"]["status"], "applied")
+
+    def test_318_missing_319_literals_is_not_failure(self):
+        target = Path("chunk.js")
+        rules = patch_report.rule_status(_layout(target), {target: VANILLA})
+        by_key = {r["key"]: r for r in rules}
+        missing = [r["key"] for r in rules if r["stream"] and r["status"] == "missing"]
+        self.assertEqual(missing, [])
+        self.assertEqual(by_key["managed_local_route"]["status"], "pending")
 
     def test_patched_applied(self):
         patched, _stats = sp.apply_patch_to_content(VANILLA)

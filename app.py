@@ -31,15 +31,8 @@ from sand_api import verify as verify_token
 
 _STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "SandClaimer")
 
-# 补丁锚定的 Cursor 版本。版本不符时给用户对应平台的直链去装这一版。
-REQUIRED_CURSOR_VERSION = "3.18.9"
-_CURSOR_SHA = "2ba48ff3f7514cc4643c52ca9f7b3173d9b66137"
-_CURSOR_DL_BASE = f"https://downloads.cursor.com/production/{_CURSOR_SHA}"
-CURSOR_DOWNLOADS = {
-    "windows": _CURSOR_DL_BASE + "/win32/x64/user-setup/CursorUserSetup-x64-3.18.9.exe",
-    "windows_system": _CURSOR_DL_BASE + "/win32/x64/system-setup/CursorSetup-x64-3.18.9.exe",
-    "mac": _CURSOR_DL_BASE + "/darwin/universal/Cursor-darwin-universal.dmg",
-}
+# 补丁锚定的 Cursor 版本。版本不符时给用户对应平台的直链去装已测试版。
+REQUIRED_CURSOR_VERSION = sand_patch.TESTED_CURSOR_VERSION_LABEL
 
 
 def _os_key() -> str:
@@ -445,6 +438,9 @@ class Api:
         try:
             st = sand_patch.inspect_status(layout)
             os_key = _os_key()
+            downloads = sand_patch.cursor_download_urls(
+                layout.version if sand_patch.is_tested_cursor_version(layout.version) else None
+            )
             result = {
                 "ok": True,
                 "version": layout.version,
@@ -455,9 +451,11 @@ class Api:
                 "client": st.client_markers + st.legacy_client_markers,
                 "eligibility": st.eligibility_markers + st.legacy_eligibility_markers,
                 "requiredVersion": REQUIRED_CURSOR_VERSION,
+                "testedVersions": list(sand_patch.TESTED_CURSOR_VERSIONS),
+                "downloadVersion": downloads["version"],
                 "os": os_key,
-                "downloadUrl": CURSOR_DOWNLOADS.get(os_key, CURSOR_DOWNLOADS["windows"]),
-                "downloadUrlSystem": CURSOR_DOWNLOADS["windows_system"] if os_key == "windows" else "",
+                "downloadUrl": downloads.get(os_key, downloads["windows"]),
+                "downloadUrlSystem": downloads["windows_system"] if os_key == "windows" else "",
             }
             # 逐条规则 + 运行中的 Cursor 是否就是这一份（群友「显示成功其实没成功」的两大来源）。
             try:

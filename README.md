@@ -80,7 +80,7 @@ build.bat
 
 ## 本机 Cursor 补丁（Stream 回路）在 1.2.1 修的两个问题
 
-补丁让 agent-host 走 `managed-local` 本地回路、以 `clientType:"sand"` 身份推理，从而计到 Bot 额度。但 3.18.9 的
+补丁让 agent-host 走 `managed-local` 本地回路、以 `clientType:"sand"` 身份推理，从而计到 Bot 额度。但 3.18.x 的
 `selectTurnRuntime` 在补丁点之前还有一道准入判定，只放 `userMessageAction + AGENT 模式 + 无子代理 run options`
 进本地回路，其余一律 `{runtime:"connect"}` 回落云端 `AgentService.Run`——而这条路在 sand 身份下被服务端
 `401 ERROR_NOT_LOGGED_IN` 拒绝。日志（`Cursor Agent Host.*.log`）里的实测表现：
@@ -95,14 +95,14 @@ asyncAskQuestionCompletionAction …` 等 12 种动作的 handler，也有 `suba
 所以 1.2.1 新增两条规则（`SAND_LOCAL_ACTIONS_V1`、`SAND_SUBAGENT_LOCAL_V1`）：准入白名单放宽到本地 runtime 真正支持的
 动作，并把子代理三项 run options 用 `!1&&(…)` 短路。BYOK 私有模型、`customSystemPrompt / harness`、
 `startPlanAction / injectContextAction` 仍按官方逻辑回落 connect。原代码全部保留为死代码，卸载按 marker 精确回退，
-对 vanilla 657.js 做过字节级往返测试。**已打旧版补丁的机器要重新点一次「打补丁」**（面板会提示「补丁需升级」）。
+对 vanilla 合成夹具做过字节级往返测试（3.18.9 形态与 3.19.13 形态）。已测试注入版本：**3.18.9 / 3.18.25 / 3.19.13**；其它版本因锚点缺失拒绝写入。**已打旧版补丁的机器要重新点一次「打补丁」**（面板会提示「补丁需升级」）。
 
 ### 补丁面板怎么看「到底成没成功」（`patch_report.py`）
 
 群友常见的「显示成功其实没成功 / 失败了不知道哪里失败」，面板现在分三层给证据：
 
 - **逐条规则**（11 条）：每条单独判定 `已生效`（标记已写入）/ `未打`（找到锚点但没改）/ `锚点缺失`（这个 Cursor 构建里没有该代码 = 版本不符）/ `部分生效`（同一规则有的位置替换了有的没替换），并列出命中的文件和修法。头部给出「N/10 条必需规则生效」的结论；若正在运行的 Cursor 不在补丁目录（本机多个安装）会用红字标出。
-- **打补丁的逐步报告**：定位 Cursor → 多安装提示 → 版本锚点 → 生成计划（改哪些文件、新增哪些规则）→ 关闭 Cursor（关不掉会明说）→ 写入并校验（marker / 扩展内嵌哈希 / product.json 完整性）→ 逐条规则确认 → 重启 Cursor（确认起来的进程就在补丁目录）→ 本机登录号的 Sand 资格。任何一步失败都写明原因与修法（没权限 → 以管理员运行；锚点缺失 → 装 3.18.9；文件被改 → 关自动更新重试 …），失败自动回滚。
+- **打补丁的逐步报告**：定位 Cursor → 多安装提示 → 版本锚点 → 生成计划（改哪些文件、新增哪些规则）→ 关闭 Cursor（关不掉会明说）→ 写入并校验（marker / 扩展内嵌哈希 / product.json 完整性）→ 逐条规则确认 → 重启 Cursor（确认起来的进程就在补丁目录）→ 本机登录号的 Sand 资格。任何一步失败都写明原因与修法（没权限 → 以管理员运行；锚点缺失 → 装 3.18.9 / 3.18.25 / 3.19.13；文件被改 → 关自动更新重试 …），失败自动回滚。
 - **验证生效**：读 Cursor 自己的 `Cursor Agent Host*.log`，检查本地回路 runtime 是否加载、move_exec 是否开、最近几轮到底走了 `managed-local`（本地 Bot 回路）还是 `connect`（回落云端，Bot 额度没用上）以及回落原因，并把 401 / 额度用尽等错误列出来。
 
 ## 安全
@@ -121,7 +121,7 @@ sand-claimer/
 ├─ test_login_sessions.py# 云端登录会话归一化 / 拉取 / get_status 接入（不联网）
 ├─ sand_patch.py         # 本机 Cursor 客户端模式补丁 / 回退（Stream 回路 + 本地准入放宽）
 ├─ patch_report.py       # 逐条规则状态 / 逐步安装报告 / 读 Cursor 日志验证生效
-├─ test_sand_patch.py    # 补丁规则单元测试（含 vanilla 657.js 字节级往返）
+├─ test_sand_patch.py    # 补丁规则单元测试（3.18 / 3.19 合成夹具字节级往返）
 ├─ test_patch_report.py  # 报告层单元测试（规则判定 / 步骤编排 / 日志解析）
 ├─ resolve.py            # DoH 绕过 DNS 劫持
 ├─ web/                  # 玻璃风 UI（index.html / style.css / app.js）

@@ -2,7 +2,7 @@
 ; 版本与源 exe 名由 build.bat 通过 /DAppVer /DExeName 传入（单一来源：sand_patch.TOOL_VERSION）。
 ; 下面默认值仅在单独跑 ISCC、未传 /DAppVer 时使用。发版请走 build.bat，不要只改这里。
 #ifndef AppVer
-#define AppVer "1.2.2"
+#define AppVer "1.3.0"
 #endif
 #ifndef ExeName
 #define ExeName "SandClaimer-" + AppVer + ".exe"

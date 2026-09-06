@@ -26,6 +26,20 @@ VANILLA = "\n".join(
     ]
 )
 
+# 3.19.13 形态：参考树字面量 + 与 3.18 相同的 identity / enablement。
+VANILLA_319 = "\n".join(
+    [
+        'g.header.set("x-cursor-client-type","ide")',
+        sp.MANAGED_LOCAL_ROUTE_319_ORIGINAL,
+        sp.LOCAL_RUNTIME_LOAD_319_ORIGINAL,
+        'clientIdentity:{clientType:"ide"}',
+        sp.MOVE_EXEC_319_ORIGINAL,
+        sp.LOCAL_ACTIONS_319_ORIGINAL,
+        sp.SUBAGENT_319_ORIGINAL,
+        "this._agentHostEnabled=foo,this.other=1",
+    ]
+)
+
 
 class ApplyRemoveRoundtripTest(unittest.TestCase):
     def test_vanilla_roundtrip_bytes(self):
@@ -56,6 +70,115 @@ class ApplyRemoveRoundtripTest(unittest.TestCase):
         self.assertEqual(once.count(sp.SAND_LOCAL_ACTIONS_MARKER), 1)
         self.assertEqual(twice.count(sp.SAND_LOCAL_ACTIONS_MARKER), 1)
         self.assertEqual(stats.local_actions, 0)
+
+    def test_318_does_not_take_319_track(self):
+        patched, _stats = sp.apply_patch_to_content(VANILLA)
+        self.assertNotIn("/*Ms*/", patched)
+        self.assertNotIn(sp.MANAGED_LOCAL_ROUTE_319_ORIGINAL, patched)
+        self.assertNotIn(sp.LOCAL_RUNTIME_LOAD_319_PATCHED, patched)
+        self.assertNotIn(sp.MOVE_EXEC_319_PATCHED, patched)
+
+
+class ApplyRemove319Test(unittest.TestCase):
+    def test_vanilla_319_roundtrip_bytes(self):
+        patched, stats = sp.apply_patch_to_content(VANILLA_319)
+        self.assertGreater(stats.total, 0)
+        restored, removed = sp.remove_patch_from_content(patched)
+        self.assertGreater(removed.total, 0)
+        self.assertEqual(restored, VANILLA_319)
+        self.assertNotIn("SAND_", restored)
+
+    def test_apply_hits_seven_stream_stats(self):
+        patched, stats = sp.apply_patch_to_content(VANILLA_319)
+        self.assertGreater(stats.managed_local_route, 0)
+        self.assertGreater(stats.local_runtime_load, 0)
+        self.assertGreater(stats.agent_host_identity, 0)
+        self.assertGreater(stats.move_exec, 0)
+        self.assertGreater(stats.local_actions, 0)
+        self.assertGreater(stats.subagent_local, 0)
+        self.assertGreater(stats.agent_host_enablement, 0)
+        self.assertIn(sp.SAND_MANAGED_LOCAL_ROUTE_MARKER, patched)
+        self.assertIn(sp.SAND_LOCAL_RUNTIME_LOAD_MARKER, patched)
+        self.assertIn(sp.SAND_MOVE_EXEC_MARKER, patched)
+        self.assertIn(sp.SAND_LOCAL_ACTIONS_MARKER, patched)
+        self.assertIn(sp.SAND_SUBAGENT_LOCAL_MARKER, patched)
+        self.assertNotIn("try{return{runtime:\"managed-local\"", patched)
+
+    def test_second_apply_319_idempotent(self):
+        once, _stats = sp.apply_patch_to_content(VANILLA_319)
+        twice, stats = sp.apply_patch_to_content(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(stats.managed_local_route, 0)
+        self.assertEqual(stats.local_runtime_load, 0)
+        self.assertEqual(stats.move_exec, 0)
+        self.assertEqual(stats.local_actions, 0)
+        self.assertEqual(stats.subagent_local, 0)
+
+    def test_uninstall_cam_319_literals(self):
+        cam = VANILLA_319.replace(
+            sp.MANAGED_LOCAL_ROUTE_319_ORIGINAL,
+            sp.CAM_MANAGED_LOCAL_ROUTE_319_PATCHED,
+        ).replace(
+            sp.LOCAL_RUNTIME_LOAD_319_ORIGINAL,
+            sp.LOCAL_RUNTIME_LOAD_319_PATCHED,
+        ).replace(
+            sp.MOVE_EXEC_319_ORIGINAL,
+            sp.CAM_MOVE_EXEC_319_PATCHED,
+        ).replace(
+            sp.LOCAL_ACTIONS_319_ORIGINAL,
+            sp.CAM_LOCAL_ACTIONS_319_PATCHED,
+        ).replace(
+            sp.SUBAGENT_319_ORIGINAL,
+            sp.CAM_SUBAGENT_319_PATCHED,
+        )
+        restored, stats = sp.remove_patch_from_content(cam)
+        self.assertGreater(stats.total, 0)
+        self.assertEqual(restored, VANILLA_319)
+        self.assertNotIn("SAND_", restored)
+
+    def test_migrate_cam_319_then_roundtrip(self):
+        cam = VANILLA_319.replace(
+            sp.MOVE_EXEC_319_ORIGINAL,
+            sp.CAM_MOVE_EXEC_319_PATCHED,
+        ).replace(
+            sp.LOCAL_ACTIONS_319_ORIGINAL,
+            sp.CAM_LOCAL_ACTIONS_319_PATCHED,
+        ).replace(
+            sp.SUBAGENT_319_ORIGINAL,
+            sp.CAM_SUBAGENT_319_PATCHED,
+        )
+        patched, stats = sp.apply_patch_to_content(cam)
+        self.assertGreater(stats.move_exec, 0)
+        self.assertGreater(stats.local_actions, 0)
+        self.assertGreater(stats.subagent_local, 0)
+        self.assertIn(sp.SAND_MOVE_EXEC_MARKER, patched)
+        self.assertNotIn(sp.CAM_MOVE_EXEC_MARKER, patched)
+        restored, _removed = sp.remove_patch_from_content(patched)
+        self.assertEqual(restored, VANILLA_319)
+
+
+class CursorVersionTest(unittest.TestCase):
+    def test_tested_versions(self):
+        self.assertTrue(sp.is_tested_cursor_version("3.18.9"))
+        self.assertTrue(sp.is_tested_cursor_version("3.18.25"))
+        self.assertTrue(sp.is_tested_cursor_version("3.19.13"))
+        self.assertTrue(sp.is_tested_cursor_version("  3.19.13\n"))
+        self.assertFalse(sp.is_tested_cursor_version("3.19.7"))
+        self.assertFalse(sp.is_tested_cursor_version("3.20.0"))
+
+    def test_download_urls_newest_default(self):
+        urls = sp.cursor_download_urls("9.9.9")
+        self.assertEqual(urls["version"], "3.19.13")
+        self.assertIn("dd066f332fcea7382764400fde902f61920648d5", urls["windows"])
+        self.assertIn("CursorUserSetup-x64-3.19.13.exe", urls["windows"])
+        official_318 = sp.cursor_download_urls("3.18.9")
+        self.assertEqual(official_318["version"], "3.18.9")
+        self.assertIn("2ba48ff3f7514cc4643c52ca9f7b3173d9b66137", official_318["windows"])
+
+    def test_content_has_319_anchors(self):
+        self.assertTrue(sp._content_has_stream_anchors(VANILLA_319))
+        self.assertTrue(sp._content_has_stream_anchors(VANILLA))
+        self.assertFalse(sp._content_has_stream_anchors("console.log('hello')"))
 
 
 class AnchorDetectTest(unittest.TestCase):

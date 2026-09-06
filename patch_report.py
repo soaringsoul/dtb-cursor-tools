@@ -35,7 +35,10 @@ _MODEL_LOCK_ANCHOR_RE = re.compile(
 _MEM_PRO_ANCHOR_RE = re.compile(r"(_membershipType=\(\)=>)(this\.storageService\.get\()")
 _MAXMODE_ANCHOR_RE = re.compile(r"(hasValidPaymentMethod=async\(\)=>\{)(?!return!0;)")
 
-VERSION_FIX = "当前 Cursor 不是 3.18.9（或是锚点不同的构建）：请安装 3.18.9 并关闭自动更新后重试。"
+VERSION_FIX = (
+    "当前 Cursor 不是已测试版本 3.18.9 / 3.18.25 / 3.19.13（或是锚点不同的构建）："
+    "请安装其中一版并关闭自动更新后重试。"
+)
 REPATCH_FIX = "重新点一次「打补丁」即可补上（会自动重启 Cursor）。"
 
 
@@ -117,7 +120,7 @@ RULES: Tuple[RuleSpec, ...] = (
         "agent-host 强制走本地回路（managed-local）",
         "对话不再交给云端 NAL，而是在本机 agent-host 里以 sand 身份推理——这是计到 Bot 额度的核心",
         (sp.SAND_MANAGED_LOCAL_ROUTE_MARKER,),
-        _guarded('reason:"gate-off"', lambda c: sp.MANAGED_LOCAL_ROUTE_RE.search(c) is not None),
+        _guarded('reason:"gate-off"', sp.has_managed_local_anchor),
         stream=True,
     ),
     RuleSpec(
@@ -125,7 +128,7 @@ RULES: Tuple[RuleSpec, ...] = (
         "强制加载本地 runtime",
         "无视 agent_host_local_loop 灰度开关，始终加载 managed local-loop runtime",
         (sp.SAND_LOCAL_RUNTIME_LOAD_MARKER,),
-        _guarded("agent_host_local_loop", lambda c: sp.LOCAL_RUNTIME_LOAD_RE.search(c) is not None),
+        sp.has_local_runtime_anchor,
         stream=True,
     ),
     RuleSpec(
@@ -152,24 +155,24 @@ RULES: Tuple[RuleSpec, ...] = (
         "move_exec",
         "move_exec：host 自带工具执行器",
         "工具（读写文件 / 终端）由 agent-host 同包提供，不再等 cursor-agent-exec 注册（否则卡 30 秒超时）",
-        (sp.SAND_MOVE_EXEC_MARKER,),
-        _guarded("createAgentHost),", lambda c: sp.MOVE_EXEC_GATE_RE.search(c) is not None),
+        (sp.SAND_MOVE_EXEC_MARKER, sp.CAM_MOVE_EXEC_MARKER),
+        sp.has_move_exec_anchor,
         stream=True,
     ),
     RuleSpec(
         "local_actions",
         "后台任务完成等动作走本地（1.2.1）",
         "后台命令跑完的通知不再回落云端被 401——修「每次结束弹 An unexpected error occurred」",
-        (sp.SAND_LOCAL_ACTIONS_MARKER,),
-        _guarded('"action-not-supported"', lambda c: sp.LOCAL_ACTIONS_RE.search(c) is not None),
+        (sp.SAND_LOCAL_ACTIONS_MARKER, sp.CAM_ACTION_MARKER),
+        sp.has_local_actions_anchor,
         stream=True,
     ),
     RuleSpec(
         "subagent_local",
         "子代理走本地 Bot 回路（1.2.1）",
         "子代理 turn 不再因 subagentTypeName 回落云端——修「子代理用不了 Bot」",
-        (sp.SAND_SUBAGENT_LOCAL_MARKER,),
-        _guarded("directMetaParentChildSubagent", lambda c: sp.SUBAGENT_RUN_OPTIONS_RE.search(c) is not None),
+        (sp.SAND_SUBAGENT_LOCAL_MARKER, sp.CAM_SUBAGENT_MARKER),
+        sp.has_subagent_anchor,
         stream=True,
     ),
 )
@@ -439,7 +442,7 @@ def install_with_report(layout: sp.CursorLayout) -> dict:
             VERSION_FIX,
         )
         return _finish(report)
-    report.step("anchors", "版本锚点检查", "ok", "3.18.9 Stream 回路 7 条锚点全部找到")
+    report.step("anchors", "版本锚点检查", "ok", "本版本 Stream 回路必需锚点全部找到")
 
     try:
         before = sp.inspect_status(layout)
@@ -475,7 +478,7 @@ def install_with_report(layout: sp.CursorLayout) -> dict:
             "plan",
             "生成补丁计划",
             "fail",
-            "没有任何规则命中，这个 Cursor 的文件结构与 3.18.9 不同",
+            "没有任何规则命中，这个 Cursor 的文件结构与已测试版本（3.18.9 / 3.18.25 / 3.19.13）不同",
             VERSION_FIX,
         )
         return _finish(report)
@@ -550,7 +553,7 @@ def install_with_report(layout: sp.CursorLayout) -> dict:
         if "发生变化" in text:
             fix = "有别的程序（Cursor 自动更新 / 杀毒）在同时改文件：关掉 Cursor 自动更新，稍等再重试"
         elif "校验失败" in text or "未全部生效" in text:
-            fix = "写入后校验不过，已自动回滚，文件恢复原样。多为 Cursor 构建与 3.18.9 官方版不一致，" + VERSION_FIX
+            fix = "写入后校验不过，已自动回滚，文件恢复原样。多为 Cursor 构建与已测试官方版不一致，" + VERSION_FIX
         report.step("write", "写入补丁文件并校验", "fail", text, fix)
         return _finish(report)
     except Exception as exc:  # pragma: no cover
