@@ -20,7 +20,7 @@ def _jwt(sub="user_01TESTACCT0000000000000000", typ="session", exp=2_000_000_000
     if extra:
         payload.update(extra)
     body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    return "eyJhbGciOiJub25lIn0." + body + ".x"
+    return "eyJhbGciOiJub25lIn0." + body + ".signature"
 
 
 def _ws(sub="user_01TESTACCT0000000000000000", **kwargs):
@@ -43,8 +43,9 @@ class ParseTokenTest(unittest.TestCase):
         self.assertTrue(jwt.startswith("eyJ"))
 
     def test_bare_jwt_sub(self):
-        uid, _jwt, _claims = sand_api.parse_token(_jwt())
+        uid, jwt, _claims = sand_api.parse_token(_jwt())
         self.assertEqual(uid, "user_01TESTACCT0000000000000000")
+        self.assertTrue(jwt.startswith("eyJ"))
 
     def test_empty_raises(self):
         with self.assertRaises(ValueError):
@@ -54,9 +55,9 @@ class ParseTokenTest(unittest.TestCase):
 class TokenExtractTest(unittest.TestCase):
     def test_labeled_line_maps_email(self):
         token = _ws()
-        text = f"a@b.c----{token}"
+        text = f"a@b.com----{token}"
         labels = accounts.labels_from_text(text)
-        self.assertEqual(labels.get(token), "a@b.c")
+        self.assertEqual(labels.get(token), "a@b.com")
 
     def test_json_prefers_access_over_refresh(self):
         access = _ws("user_01TESTPRIO000000000000000")
