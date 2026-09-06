@@ -1,0 +1,18 @@
+# 构建产物 / 中间文件
+nuitka-out/
+installer/
+build/
+dist/
+*.spec
+nuitka-crash-report.xml
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 临时/调试脚本
+_*.py
+_*.js
+
+# 生成的图标（可由 make_icon.py 重新生成）
+icon.ico

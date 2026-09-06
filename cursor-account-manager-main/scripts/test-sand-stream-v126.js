@@ -1,0 +1,92 @@
+'use strict';
+const assert = require('assert');
+const sand = require('../src/sandStream');
+
+const fixture =
+  'try{return(yield o.checkFeatureGate(ae))?{runtime:"managed-local",reason:"eligible"}:{runtime:"connect",reason:"gate-off"}}catch(e)' +
+  'let t=!1;try{t=await r.cursor.checkFeatureGate(Ds)}' +
+  'p=await Promise.resolve(r.cursor.checkFeatureGate(Us)).catch(()=>!1)' +
+  'hasUnsupportedRunOptions:void 0!==e.runOptions.customSystemPrompt||void 0!==e.runOptions.harness||!0===e.runOptions.excludeWorkspaceContext||void 0!==e.runOptions.subagentTypeName||void 0!==e.runOptions.parentAgentToolCallId||!0===e.runOptions.directMetaParentChildSubagent' +
+  'return"userMessageAction"!==e.actionCase?"action-not-supported":e.requestedMode!==oe.xyI.AGENT?"mode-not-supported":e.simulatedUserMessage?"simulated-message-not-supported":void 0===e.modelId?"model-not-supported":e.hasModelCredentials?"private-model-not-supported":e.hasUnsupportedRunOptions?"run-options-not-supported":void 0' +
+  'e.resumeAgentId&&e.mode===Mn.FL.UNSPECIFIED&&!e.readonly?oe.xyI.UNSPECIFIED:' +
+  'x.source==="interactive-child"||x.payload.notificationContext==="user_driven_interactive_child"' +
+  'y.source==="interactive-child"||y.payload.notificationContext==="user_driven_interactive_child"' +
+  'const Cre={enableEmptyResponseRetry:!0,enableGrepBroadGlobGuard:!0,enableReadToolNegativeOffset:!0,enableSandboxSharedBuildCache:!0,nalLoopDetection:!0};' +
+  'isGenerateImageModelRestricted:!1,taskToolProps:void 0},resolvers:' +
+  'clientIdentity:{clientType:"ide"}' +
+  'function hre(e){return t=>{return n=this,o=void 0,s=function*(){' +
+  'this._agentHostEnabled=gate,' +
+  '$4i="[push_req_context]",Ykd=1e4' +
+  'this._lastPushedRulesProto=void 0,this._providerRulesCache=new Map';
+
+const applied = sand.applySandPatches(fixture);
+const d = sand.detectSand(applied.content);
+assert.ok(sand.streamModeInstalled(d), JSON.stringify(d, null, 2));
+assert.ok(sand.CLIENT_SUBAGENT_ENABLED, 'default must keep client subagent on');
+assert.ok(sand.streamLifecycleInstalled(d), JSON.stringify(d, null, 2));
+assert.strictEqual(d.subagentRoute, 1);
+assert.strictEqual(d.subagentSession, 1);
+assert.strictEqual(d.taskTool, 1);
+assert.strictEqual(d.actionRoute, 1);
+assert.strictEqual(d.resumeMode, 1);
+assert.strictEqual(d.completionWake, 2);
+assert.strictEqual(d.pushContextTimeout, 1);
+assert.ok(applied.content.includes('Ykd=50/*SAND_PUSH_CONTEXT_TIMEOUT_V1*/'));
+assert.ok(applied.content.includes('_lastPushedRulesProto=[]/*SAND_RULES_PRESEED_V1*/'));
+const from200 = sand.applySandPatches(
+  fixture.replace('Ykd=1e4', 'Ykd=200/*SAND_PUSH_CONTEXT_TIMEOUT_V1*/')
+);
+assert.ok(from200.content.includes('Ykd=50/*SAND_PUSH_CONTEXT_TIMEOUT_V1*/'));
+assert.ok(!from200.content.includes('Ykd=200/*SAND_PUSH_CONTEXT_TIMEOUT_V1*/'));
+
+const removed = sand.removeSandPatches(applied.content);
+assert.strictEqual(removed.content, fixture, 'apply/remove should be reversible');
+
+const v125 = sand.managedTaskToolPatchedV125();
+const unmigrated = sand.removeSandPatches(v125);
+assert.ok(unmigrated.content.includes('taskToolProps:void 0},resolvers:'));
+assert.ok(!unmigrated.content.includes('SAND_MANAGED_TASK_TOOL'));
+
+const fixture319 =
+  'if(!o)return{runtime:"connect",reason:"gate-off"};const s=g(t),i=A(s,e,r);return void 0!==i?f(i,s):{runtime:"managed-local",reason:"eligible"}' +
+  'let t=!1;try{t=await r.cursor.checkFeatureGate(Ms)}' +
+  'h=await Promise.resolve(r.cursor.checkFeatureGate(Js)).catch(()=>!1)' +
+  'isHostedSubagentChild:Boolean(e.runOptions.subagentTypeName||e.runOptions.parentAgentToolCallId)' +
+  '"userMessageAction"!==e.actionCase?"action-not-supported":' +
+  'function(e){return e.requestedMode===o.xy.AGENT||e.isHostedSubagentChild&&e.requestedMode===o.xy.UNSPECIFIED}(e)?' +
+  'e.simulatedUserMessage?"simulated-message-not-supported":y(e,r):"mode-not-supported"' +
+  'e.resumeAgentId&&e.mode===Gn.FL.UNSPECIFIED&&!e.readonly?Ee.xy.UNSPECIFIED:' +
+  'x.source==="interactive-child"||x.payload.notificationContext==="user_driven_interactive_child"' +
+  'y.source==="interactive-child"||y.payload.notificationContext==="user_driven_interactive_child"' +
+  'outputNotificationLimit:1e3,useClientSideSubagent:!0}' +
+  'isGenerateImageModelRestricted:!1,taskToolProps:Ne({parentModelId:null!=p?p:n.modelName,modelInfo:n})},resolvers:' +
+  'clientIdentity:{clientType:"ide"}' +
+  'class J{constructor(e,t,n,o){this.client=e}getSession(){return this}getExecutor(e){return e}}void o.Ycw(0);' +
+  'function me(e){return t=>{return n=this,r=void 0,s=function*(){' +
+  'this._agentHostEnabled=gate,' +
+  '$4i="[push_req_context]",Ykd=1e4' +
+  'this._lastPushedRulesProto=void 0,this._providerRulesCache=new Map' +
+  'function Z1S(t){const{adminSettingsService:e';
+
+const applied319 = sand.applySandPatches(fixture319);
+const d319 = sand.detectSand(applied319.content);
+assert.ok(sand.streamModeInstalled(d319), JSON.stringify(d319, null, 2));
+assert.ok(sand.streamLifecycleInstalled(d319), JSON.stringify(d319, null, 2));
+assert.strictEqual(d319.managedLocal, 1);
+assert.strictEqual(d319.runtimeLoad, 1);
+assert.strictEqual(d319.moveExec, 1);
+assert.strictEqual(d319.directStream, 1);
+assert.strictEqual(d319.actionRoute, 1);
+assert.strictEqual(d319.resumeMode, 1);
+assert.strictEqual(d319.taskTool, 1);
+assert.strictEqual(d319.subagentSession, 1);
+assert.ok(applied319.content.includes('Ee.xy.AGENT'), '3.19 resume must keep Ee.xy');
+assert.ok(!applied319.content.includes('oe.xyI.AGENT'), '3.19 resume must not write oe.xyI');
+assert.ok(
+  applied319.content.includes('resolvedModelMetadata:{promptModelInfo:oe(meta,mid),useDsv3Harness:!1}'),
+  '3.19 stream must wrap oe() as promptModelInfo'
+);
+const removed319 = sand.removeSandPatches(applied319.content);
+assert.strictEqual(removed319.content, fixture319, '3.19 apply/remove should be reversible');
+
+console.log('sand stream lifecycle + timeout patches ok');

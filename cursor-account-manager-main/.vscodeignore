@@ -1,0 +1,12 @@
+scripts/**
+src/**
+preview.html
+docs/**
+**/*.map
+.DS_Store
+node_modules/**
+.git/**
+.gitignore
+*.sync.star
+**/*.sync.star
+task.sync.star
