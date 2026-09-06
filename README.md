@@ -125,6 +125,8 @@ sand-claimer/
 ├─ test_patch_report.py  # 报告层单元测试（规则判定 / 步骤编排 / 日志解析）
 ├─ resolve.py            # DoH 绕过 DNS 劫持
 ├─ web/                  # 玻璃风 UI（index.html / style.css / app.js）
+├─ docs/prd/             # 产品级迭代 PRD（号池线 / 补丁线排期）
+├─ docs/superpowers/     # 单功能规格与实现计划
 ├─ make_icon.py          # 生成多尺寸 icon.ico（自带沙漏图标，可用 assets/icon-1024.png 覆盖）
 ├─ patch_plugin.py       # 修补 Nuitka pywebview 插件（补 win32）
 ├─ installer.iss         # Inno Setup 安装包脚本
@@ -133,3 +135,5 @@ sand-claimer/
 ├─ requirements.txt
 └─ build.bat             # 一键：编译 + 打安装包
 ```
+
+> 三个 `test_*.py` 里，当前仓库实际只有 `test_login_sessions.py`；其余为 README 预留、**1.2.2 质检包要补齐**。迭代排期、两条产品线和下一步做什么见 [迭代 PRD](docs/prd/2026-09-06-iteration-prd.md)。
