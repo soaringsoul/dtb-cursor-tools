@@ -6,6 +6,7 @@
   - teamId：POST https://cursor.com/api/dashboard/get-me（会话 cookie）
   - 领取：个人 POST /api/dashboard/start-sand-trial；团队 POST /api/dashboard/request-sand-team-access（body 带 teamId）
   - 登录会话：GET https://cursor.com/api/auth/sessions（会话 cookie）
+  - 踢下线：POST https://cursor.com/api/auth/sessions/revoke（会话 cookie + Origin，body {"session_id", "type": 数字}，与官网 Revoke 按钮一致）
 鉴权：api2 用 Bearer 明文 accessToken；cursor.com 用会话 cookie（userId::jwt），写操作再加 Origin 过 CSRF。
 
 额度口径（实测 usage-summary 原始响应，Pro 个人号）：
@@ -44,9 +45,13 @@ TEAM_SPEND_URL = "https://cursor.com/api/dashboard/get-team-spend"
 STRIPE_URL = "https://cursor.com/api/auth/stripe"
 AUTH_ME_URL = "https://cursor.com/api/auth/me"
 SESSIONS_URL = "https://cursor.com/api/auth/sessions"
+SESSIONS_REVOKE_URL = "https://cursor.com/api/auth/sessions/revoke"
 ORIGIN = "https://cursor.com"
+DASHBOARD_REFERER = "https://cursor.com/dashboard"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 TIMEOUT = 20
+WAF_SESSIONS_ERROR = "会话接口被网站人机校验拦截，请稍后再刷新（不要连续狂点）"
+WAF_REVOKE_ERROR = "踢下线被网站人机校验拦截，请稍后再试"
 # Sand（Grok Bot）额度按周重置；接口不回 nextResetTimestampUtc 时用 currentPeriodStart + 7 天推算。
 SAND_PERIOD_DAYS = 7
 
@@ -129,10 +134,11 @@ def probe_token_alive(token: str) -> str:
         user_id, jwt, _claims = parse_token(token)
     except Exception:
         return "unknown"
-    headers = {"cookie": _cookie(user_id, jwt), "accept": "application/json", "user-agent": UA}
-    status, _text = _get(AUTH_ME_URL, headers)
+    status, text = _get(AUTH_ME_URL, _web_get_headers(user_id, jwt))
     if status == 200:
         return "alive"
+    if is_waf_block(status, text):
+        return "unknown"
     if status in (204, 401, 403):
         return "dead"
     return "unknown"
@@ -226,7 +232,101 @@ def _cookie_headers(user_id: str, jwt: str, origin: bool = False) -> dict:
     }
     if origin:
         headers["origin"] = ORIGIN
+        headers["referer"] = DASHBOARD_REFERER
     return headers
+
+
+def _web_get_headers(user_id: str, jwt: str) -> dict:
+    """cursor.com 读接口：会话 cookie + Origin/Referer。
+
+    dashboard 的写接口缺 Origin 会 403；GET /api/auth/sessions 近年同样会校验来源，
+    不带头时常见「会话接口 HTTP 403」，而 usage-summary 等仍可能 200。
+    """
+    return {
+        "cookie": _cookie(user_id, jwt),
+        "accept": "application/json",
+        "user-agent": UA,
+        "origin": ORIGIN,
+        "referer": DASHBOARD_REFERER,
+    }
+
+
+def is_waf_block(status, text) -> bool:
+    """Vercel Security Checkpoint：403/429/200 + HTML，不是登录态作废。"""
+    if status not in (200, 403, 429):
+        return False
+    blob = (text or "")[:8000].lower()
+    return (
+        "vercel security checkpoint" in blob
+        or "we're verifying your browser" in blob
+        or "x-vercel-mitigated" in blob
+        or ("<!doctype html" in blob and "vercel" in blob)
+    )
+
+
+REVOKE_TYPE_BY_NAME = {
+    "SESSION_TYPE_WEB": 1,
+    "web": 1,
+    "SESSION_TYPE_CLIENT": 2,
+    "client": 2,
+    "SESSION_TYPE_MOBILE": 10,
+    "mobile": 10,
+    "SESSION_TYPE_CHROME_EXTENSION": 11,
+    "chrome_extension": 11,
+    "chrome-extension": 11,
+}
+
+
+def revoke_type_value(session_type):
+    """官网 Revoke 按钮把 SESSION_TYPE_* 编成数字 type：WEB=1 CLIENT=2 MOBILE=10 CHROME_EXTENSION=11。"""
+    if session_type is None or session_type is False:
+        return None
+    if isinstance(session_type, bool):
+        return None
+    if isinstance(session_type, int):
+        return session_type if session_type in (1, 2, 10, 11) else None
+    key = str(session_type).strip()
+    if not key:
+        return None
+    if key.isdigit():
+        return revoke_type_value(int(key))
+    return REVOKE_TYPE_BY_NAME.get(key)
+
+
+def _lookup_session_type(user_id: str, jwt: str, session_id: str):
+    block = fetch_sessions(user_id, jwt)
+    for row in block.get("sessions") or []:
+        if str(row.get("sessionId") or "") == session_id:
+            return row.get("typeRaw") or row.get("type")
+    return None
+
+
+def _revoke_http_result(status, text) -> dict:
+    if status == 200:
+        if is_waf_block(status, text):
+            return {"ok": False, "error": WAF_REVOKE_ERROR, "status": status, "waf": True}
+        blob = (text or "").strip()
+        if not blob or blob in ("{}", "null", "true"):
+            return {"ok": True, "error": "", "status": 200}
+        if blob[:1] == "<" or blob.lower().startswith("<!doctype"):
+            return {"ok": False, "error": "踢下线返回了网页而不是结果，可能被拦截", "status": status, "waf": True}
+        try:
+            payload = json.loads(blob)
+        except Exception:
+            return {"ok": False, "error": "踢下线响应无法解析", "status": status}
+        if isinstance(payload, dict) and payload.get("error"):
+            err = payload.get("error")
+            if isinstance(err, dict):
+                err = err.get("message") or str(err)
+            return {"ok": False, "error": str(err), "status": status}
+        return {"ok": True, "error": "", "status": 200}
+    if status == 0:
+        return {"ok": False, "error": f"踢下线接口无响应：{(text or '')[:120]}", "status": 0}
+    if is_waf_block(status, text):
+        return {"ok": False, "error": WAF_REVOKE_ERROR, "status": status, "waf": True}
+    if status in (401, 403):
+        return {"ok": False, "error": f"登录态无效（HTTP {status}）", "status": status}
+    return {"ok": False, "error": f"HTTP {status}: {(text or '')[:160]}", "status": status}
 
 
 def _post(url: str, headers: dict, body: str = "{}"):
@@ -272,8 +372,9 @@ def _usage_plan_block(body: dict) -> dict:
 
 def fetch_general_usage_with_code(user_id: str, jwt: str):
     """同 fetch_general_usage，但连 HTTP 状态码一起返回 (status, dict|None)，供判定账号是否失效。"""
-    headers = {"cookie": _cookie(user_id, jwt), "accept": "application/json", "user-agent": UA}
-    status, text = _get(USAGE_SUMMARY_URL, headers)
+    status, text = _get(USAGE_SUMMARY_URL, _web_get_headers(user_id, jwt))
+    if is_waf_block(status, text):
+        return 0, None
     if status != 200:
         return status, None
     try:
@@ -322,8 +423,7 @@ def _general_usage_fields(body: dict) -> dict:
 
 def fetch_subscription(user_id: str, jwt: str):
     """查订阅状态（GET auth/stripe，会话 cookie）。返回是否在续费、是否待取消、月付/年付。"""
-    headers = {"cookie": _cookie(user_id, jwt), "accept": "application/json", "user-agent": UA, "origin": ORIGIN}
-    status, text = _get(STRIPE_URL, headers)
+    status, text = _get(STRIPE_URL, _web_get_headers(user_id, jwt))
     if status != 200:
         return None
     try:
@@ -412,13 +512,14 @@ def _sand_usage_fields(body: dict) -> dict:
     }
 
 
-def empty_session_block(error: str = "") -> dict:
+def empty_session_block(error: str = "", waf: bool = False) -> dict:
     return {
         "sessions": [],
         "sessionCount": 0,
         "sessionClientCount": 0,
         "sessionWebCount": 0,
         "sessionError": error or "",
+        "sessionWaf": bool(waf),
     }
 
 
@@ -470,15 +571,32 @@ def normalize_sessions(payload) -> dict:
         "sessionClientCount": client_n,
         "sessionWebCount": web_n,
         "sessionError": "",
+        "sessionWaf": False,
     }
+
+
+def annotate_local_sessions(sessions, is_local_account) -> list:
+    """给会话打本机标记。官网没有电脑名：本机账号下，1 条客户端=本机，多条=可能是本机。不改入参。"""
+    rows = list(sessions or [])
+    if not is_local_account:
+        return [{**row, "localMark": None} for row in rows]
+    client_n = sum(1 for row in rows if row.get("type") == "client")
+    mark = "local" if client_n == 1 else ("maybe-local" if client_n > 1 else None)
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["localMark"] = mark if item.get("type") == "client" else None
+        out.append(item)
+    return out
 
 
 def fetch_sessions(user_id: str, jwt: str) -> dict:
     """只读拉取云端登录会话。任何失败都返回 empty_session_block，不抛。"""
-    headers = {"cookie": _cookie(user_id, jwt), "accept": "application/json", "user-agent": UA}
-    status, text = _get(SESSIONS_URL, headers)
+    status, text = _get(SESSIONS_URL, _web_get_headers(user_id, jwt))
     if status == 0:
         return empty_session_block("会话接口无响应")
+    if is_waf_block(status, text):
+        return empty_session_block(WAF_SESSIONS_ERROR, waf=True)
     if status != 200:
         return empty_session_block(f"会话接口 HTTP {status}")
     try:
@@ -486,6 +604,25 @@ def fetch_sessions(user_id: str, jwt: str) -> dict:
     except Exception:
         return empty_session_block("会话数据无法解析")
     return normalize_sessions(payload)
+
+
+def revoke_session(user_id: str, jwt: str, session_id: str, session_type=None) -> dict:
+    """踢掉一个云端登录会话（对应 dashboard Settings → Active Sessions 的 Revoke）。
+
+    官网按钮 POST /api/auth/sessions/revoke，body 是 {"session_id", "type": 数字}，
+    不是 {"sessionId"}。错误 body 也会 HTTP 200 {}，所以调用方必须以列表是否少了这台为准。
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": "sessionId 为空", "status": 0}
+    type_value = revoke_type_value(session_type)
+    if type_value is None:
+        type_value = revoke_type_value(_lookup_session_type(user_id, jwt, sid))
+    if type_value is None:
+        return {"ok": False, "error": "无法确定设备类型，未提交踢下线", "status": 0}
+    body = json.dumps({"session_id": sid, "type": type_value})
+    status, text = _post(SESSIONS_REVOKE_URL, _cookie_headers(user_id, jwt, origin=True), body)
+    return _revoke_http_result(status, text)
 
 
 def fetch_access(user_id: str, jwt: str):
@@ -727,6 +864,7 @@ def get_status(token: str, sand=None) -> dict:
         "sessionClientCount": int(sess.get("sessionClientCount") or 0),
         "sessionWebCount": int(sess.get("sessionWebCount") or 0),
         "sessionError": sess.get("sessionError") or "",
+        "sessionWaf": bool(sess.get("sessionWaf")),
     }
     # —— 池 1：Bot 周用量（Sand）。
     result.update(_sand_fields(usage))

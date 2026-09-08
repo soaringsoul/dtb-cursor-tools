@@ -20,159 +20,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+import cam_patch
 import sand_patch as sp
 
 # ---------------------------------------------------------------------------
 # 规则清单
 # ---------------------------------------------------------------------------
 
-_ELIGIBILITY_ANCHOR_RE = re.compile(
-    r"(function\s+[A-Za-z0-9_$]+\([A-Za-z0-9_$]+\)\{)(const\{adminSettingsService:)"
+VERSION_FIX = (
+    "当前 Cursor 可能不是 3.18.9 / 3.18.25 / 3.19.13："
+    "请安装已测试版本并关闭自动更新后重试。"
 )
-_MODEL_LOCK_ANCHOR_RE = re.compile(
-    r"(hasResolvedTeamMembership:\w+,teamId:\w+\}\)\{)(return \w+===\w+\.FREE&&\w+&&\w+===void 0\})"
-)
-_MEM_PRO_ANCHOR_RE = re.compile(r"(_membershipType=\(\)=>)(this\.storageService\.get\()")
-_MAXMODE_ANCHOR_RE = re.compile(r"(hasValidPaymentMethod=async\(\)=>\{)(?!return!0;)")
-
-VERSION_FIX = "当前 Cursor 不是 3.18.9（或是锚点不同的构建）：请安装 3.18.9 并关闭自动更新后重试。"
 REPATCH_FIX = "重新点一次「打补丁」即可补上（会自动重启 Cursor）。"
-
-
-def _client_anchor(content: str) -> bool:
-    """还有没有没改成 sand 的 client-type 写法。
-
-    直接用 sand_patch 的正则扫 40MB 的 workbench 包要 5 秒（以标识符开头的模式在每个字节都要试），
-    所以先定位 "x-cursor-client-type" 字面量，只在它前后 200 字符的小窗口里跑正则。
-    """
-    needle = "x-cursor-client-type"
-    pos = content.find(needle)
-    while pos >= 0:
-        window = content[max(0, pos - 200) : pos + 200]
-        if sp.HEADER_SET_SIMPLE_RE.search(window):
-            return True
-        for _key, rule in sp.CLIENT_RULES:
-            for match in rule.finditer(window):
-                if match.group(3) == "ide":
-                    return True
-        pos = content.find(needle, pos + len(needle))
-    return False
-
-
-def _guarded(needle: str, check: Callable[[str], bool]) -> Callable[[str], bool]:
-    """先做子串速查，文件里根本没有这段字面量就不跑正则（大包上省掉数秒）。"""
-    return lambda c: needle in c and check(c)
-
-
-@dataclass(frozen=True)
-class RuleSpec:
-    key: str
-    title: str
-    why: str
-    markers: Tuple[str, ...]
-    anchor: Callable[[str], bool]
-    stream: bool = False
-    optional: bool = False
-    # 只在这些文件名上才有意义（None = 所有目标文件）
-    file_names: Optional[Tuple[str, ...]] = None
-
-
-RULES: Tuple[RuleSpec, ...] = (
-    RuleSpec(
-        "client_type",
-        "客户端身份改为 sand",
-        "所有非 Agent Run 请求带 x-cursor-client-type: sand，服务端按 Grok Bot 客户端计费到 Bot 额度",
-        (sp.SAND_CLIENT_MARKER, sp.SAND_CLIENT_EXISTING_MARKER, sp.SAND_HDRFIX_V2_MARKER, sp.SAND_GLASSFIX_MARKER),
-        _client_anchor,
-    ),
-    RuleSpec(
-        "eligibility",
-        "资格判定短路",
-        "跳过客户端里「是否允许 Sand」的管理员设置判定",
-        (sp.SAND_ELIGIBILITY_MARKER,),
-        _guarded("adminSettingsService:", lambda c: _ELIGIBILITY_ANCHOR_RE.search(c) is not None),
-    ),
-    RuleSpec(
-        "membership",
-        "会员伪装（renderer fetch 钩子）",
-        "把会员 / 用量接口响应改成企业版，解锁界面上被套餐锁住的功能",
-        (sp.SAND_MEMBERSHIP_MARKER,),
-        lambda c: True,
-        file_names=sp.MEMBERSHIP_TARGET_NAMES,
-    ),
-    RuleSpec(
-        "model_unlock",
-        "模型列表 / Max mode 解锁",
-        "免费号也能选命名模型、开 Max mode（可选，不影响 Bot 回路）",
-        (sp.SAND_MODEL_UNLOCK_MARKER, sp.SAND_MEM_PRO_MARKER, sp.SAND_MAXMODE_MARKER),
-        lambda c: bool(
-            ("hasResolvedTeamMembership:" in c and _MODEL_LOCK_ANCHOR_RE.search(c))
-            or ("_membershipType=()=>" in c and _MEM_PRO_ANCHOR_RE.search(c))
-            or ("hasValidPaymentMethod=async()=>{" in c and _MAXMODE_ANCHOR_RE.search(c))
-        ),
-        optional=True,
-    ),
-    RuleSpec(
-        "managed_local_route",
-        "agent-host 强制走本地回路（managed-local）",
-        "对话不再交给云端 NAL，而是在本机 agent-host 里以 sand 身份推理——这是计到 Bot 额度的核心",
-        (sp.SAND_MANAGED_LOCAL_ROUTE_MARKER,),
-        _guarded('reason:"gate-off"', lambda c: sp.MANAGED_LOCAL_ROUTE_RE.search(c) is not None),
-        stream=True,
-    ),
-    RuleSpec(
-        "local_runtime_load",
-        "强制加载本地 runtime",
-        "无视 agent_host_local_loop 灰度开关，始终加载 managed local-loop runtime",
-        (sp.SAND_LOCAL_RUNTIME_LOAD_MARKER,),
-        _guarded("agent_host_local_loop", lambda c: sp.LOCAL_RUNTIME_LOAD_RE.search(c) is not None),
-        stream=True,
-    ),
-    RuleSpec(
-        "agent_host_identity",
-        "agent-host 身份 ide → sand",
-        "本地回路发出的推理请求以 sand 客户端身份出现",
-        (sp.SAND_AGENT_HOST_IDENTITY_MARKER,),
-        lambda c: sp.AGENT_HOST_IDENTITY_ORIGINAL in c,
-        stream=True,
-    ),
-    RuleSpec(
-        "agent_host_enablement",
-        "强制开启 agent host",
-        "workbench 侧无视 cursorAgentHostEnabled 开关",
-        (sp.SAND_AGENT_HOST_ENABLEMENT_MARKER,),
-        # 该规则是在锚点前插入而非替换，打完后原锚点仍在；只在还没有 marker 时才算「待打」。
-        _guarded(
-            "_agentHostEnabled=",
-            lambda c: sp.SAND_AGENT_HOST_ENABLEMENT_MARKER not in c and sp.AGENT_HOST_ENABLEMENT_RE.search(c) is not None,
-        ),
-        stream=True,
-    ),
-    RuleSpec(
-        "move_exec",
-        "move_exec：host 自带工具执行器",
-        "工具（读写文件 / 终端）由 agent-host 同包提供，不再等 cursor-agent-exec 注册（否则卡 30 秒超时）",
-        (sp.SAND_MOVE_EXEC_MARKER,),
-        _guarded("createAgentHost),", lambda c: sp.MOVE_EXEC_GATE_RE.search(c) is not None),
-        stream=True,
-    ),
-    RuleSpec(
-        "local_actions",
-        "后台任务完成等动作走本地（1.2.1）",
-        "后台命令跑完的通知不再回落云端被 401——修「每次结束弹 An unexpected error occurred」",
-        (sp.SAND_LOCAL_ACTIONS_MARKER,),
-        _guarded('"action-not-supported"', lambda c: sp.LOCAL_ACTIONS_RE.search(c) is not None),
-        stream=True,
-    ),
-    RuleSpec(
-        "subagent_local",
-        "子代理走本地 Bot 回路（1.2.1）",
-        "子代理 turn 不再因 subagentTypeName 回落云端——修「子代理用不了 Bot」",
-        (sp.SAND_SUBAGENT_LOCAL_MARKER,),
-        _guarded("directMetaParentChildSubagent", lambda c: sp.SUBAGENT_RUN_OPTIONS_RE.search(c) is not None),
-        stream=True,
-    ),
-)
 
 STATUS_LABEL = {
     "applied": "已生效",
@@ -189,64 +48,12 @@ def _rel(layout: sp.CursorLayout, path: Path) -> str:
         return str(path)
 
 
-def rule_status(layout: sp.CursorLayout, contents: Optional[Dict[Path, str]] = None) -> List[dict]:
-    """逐条规则：在所有目标文件里数 marker、查锚点，给出 applied / partial / pending / missing。"""
-    if contents is None:
-        contents = {}
-        for target in layout.target_paths:
-            try:
-                contents[target] = sp._decode_js(target.read_bytes(), target)
-            except Exception:
-                continue
-    out: List[dict] = []
-    for spec in RULES:
-        markers = 0
-        anchors = 0
-        files: List[str] = []
-        for path, content in contents.items():
-            if spec.file_names is not None and path.name not in spec.file_names:
-                continue
-            count = sum(content.count(m) for m in spec.markers)
-            hit_anchor = False
-            try:
-                hit_anchor = bool(spec.anchor(content))
-            except Exception:
-                hit_anchor = False
-            if count:
-                files.append(_rel(layout, path))
-            markers += count
-            anchors += 1 if hit_anchor else 0
-        if markers and not anchors:
-            status = "applied"
-        elif markers and anchors:
-            # 会员伪装的 anchor 恒真（只看文件名），有 marker 就是生效。
-            status = "applied" if spec.key == "membership" else "partial"
-        elif anchors:
-            status = "pending"
-        else:
-            status = "missing"
-        fix = ""
-        if status == "pending":
-            fix = REPATCH_FIX
-        elif status == "partial":
-            fix = "有锚点没被替换到，" + REPATCH_FIX
-        elif status == "missing" and not spec.optional:
-            fix = VERSION_FIX
-        out.append(
-            {
-                "key": spec.key,
-                "title": spec.title,
-                "why": spec.why,
-                "stream": spec.stream,
-                "optional": spec.optional,
-                "status": status,
-                "statusLabel": STATUS_LABEL[status],
-                "markers": markers,
-                "files": files,
-                "fix": fix,
-            }
-        )
-    return out
+def rule_status(layout: sp.CursorLayout, contents: Optional[Dict[Path, str]] = None, inspect_data: Optional[dict] = None) -> List[dict]:
+    """逐条规则来自插件 inspect 的 stream / header 计数。"""
+    data = inspect_data
+    if data is None:
+        data = cam_patch.inspect(layout.app_root)
+    return cam_patch.rule_rows(data)
 
 
 def summarize_rules(rules: Sequence[dict]) -> dict:
@@ -413,7 +220,7 @@ def account_check() -> dict:
 
 
 def install_with_report(layout: sp.CursorLayout) -> dict:
-    """带逐步报告的安装。任何一步失败都会写进 steps 并停止，前面已写入的文件由 _commit_plan 自动回滚。"""
+    """带逐步报告的安装。文件改写交给 cursor-account-manager 的 applyPatch。"""
     report = Report(version=layout.version, path=str(layout.install_root))
     report.step("locate", "定位 Cursor", "ok", f"Cursor {layout.version} · {layout.install_root}")
 
@@ -427,45 +234,41 @@ def install_with_report(layout: sp.CursorLayout) -> dict:
             "确认你平时双击打开的就是被打补丁的那个（看 Cursor「关于」里的安装路径），否则在补丁面板用「设置路径」指到正确目录再打",
         )
 
-    report.rulesBefore = rule_status(layout)
+    try:
+        inspect_data = cam_patch.inspect(layout.app_root)
+    except cam_patch.CamPatchError as exc:
+        report.step("inspect", "读取当前补丁状态", "fail", str(exc), "请先安装 Node.js，并确保 cursor-account-manager-main/src 还在本工具目录里")
+        return _finish(report)
+
+    report.rulesBefore = rule_status(layout, inspect_data=inspect_data)
     before_summary = summarize_rules(report.rulesBefore)
-    stream_missing = [r for r in report.rulesBefore if r["stream"] and r["status"] == "missing"]
-    if stream_missing:
+    tested = cam_patch.is_tested_version(layout.version)
+    if tested:
         report.step(
             "anchors",
-            "版本锚点检查",
-            "fail",
-            f"Cursor {layout.version} 缺少 {len(stream_missing)} 条 Stream 回路锚点：" + "、".join(r["title"] for r in stream_missing),
+            "版本检查",
+            "ok",
+            f"Cursor {layout.version} 在已测试列表（{cam_patch.required_version_label()}）",
+        )
+    else:
+        report.step(
+            "anchors",
+            "版本检查",
+            "warn",
+            f"Cursor {layout.version} 不在已测试列表（{cam_patch.required_version_label()}）。插件仍会尝试，命中不全则拒绝写入。",
             VERSION_FIX,
         )
-        return _finish(report)
-    report.step("anchors", "版本锚点检查", "ok", "3.18.9 Stream 回路 7 条锚点全部找到")
 
     try:
-        before = sp.inspect_status(layout)
-    except sp.SandToolError as exc:
-        report.step("inspect", "读取当前补丁状态", "fail", str(exc))
-        return _finish(report)
-    if before.external_marker_count:
-        report.step(
-            "inspect",
-            "读取当前补丁状态",
-            "fail",
-            f"检测到其他工具留下的 Sand 标记 {before.external_marker_count} 处，本工具不接管",
-            "先用原来那个工具卸载干净，再用本工具打",
-        )
-        return _finish(report)
-
-    try:
-        plan, stats = sp._build_install_plan(layout)
-    except sp.SandToolError as exc:
-        report.step("plan", "生成补丁计划", "fail", str(exc))
+        dry = cam_patch.apply(layout.app_root, dry_run=True)
+    except cam_patch.CamPatchError as exc:
+        report.step("plan", "生成补丁计划", "fail", str(exc), VERSION_FIX)
         return _finish(report)
     except PermissionError as exc:
         report.step("plan", "生成补丁计划", "fail", f"没有读取权限：{exc}", "右键「以管理员身份运行」本工具后重试")
         return _finish(report)
 
-    if not plan:
+    if dry.get("reason") == "already-patched" or not dry.get("changed"):
         if before_summary["verdict"] == "full":
             report.step("plan", "生成补丁计划", "ok", "所有规则已是最新，无需改文件")
             report.rulesAfter = report.rulesBefore
@@ -475,31 +278,25 @@ def install_with_report(layout: sp.CursorLayout) -> dict:
             "plan",
             "生成补丁计划",
             "fail",
-            "没有任何规则命中，这个 Cursor 的文件结构与 3.18.9 不同",
+            dry.get("reason") or "插件没有找到可改写的锚点",
             VERSION_FIX,
         )
         return _finish(report)
-    hit_bits = []
-    for key, label in (
-        ("set_header", "请求头"),
-        ("object_header", "静态头"),
-        ("eligibility", "资格判定"),
-        ("managed_local_route", "本地路由"),
-        ("local_runtime_load", "runtime 加载"),
-        ("agent_host_identity", "host 身份"),
-        ("agent_host_enablement", "开启 host"),
-        ("move_exec", "move_exec"),
-        ("local_actions", "后台动作本地"),
-        ("subagent_local", "子代理本地"),
-    ):
-        n = getattr(stats, key, 0)
-        if n:
-            hit_bits.append(f"{label}×{n}")
+
+    files = dry.get("files") or []
+    names = []
+    for item in files:
+        if isinstance(item, dict):
+            names.append(str(item.get("rel") or ""))
+        else:
+            names.append(str(item))
+    names = [n for n in names if n]
     report.step(
         "plan",
         "生成补丁计划",
         "ok",
-        f"将修改 {len(plan)} 个文件：" + "、".join(_rel(layout, p) for p in plan) + ("（本次新增：" + "，".join(hit_bits) + "）" if hit_bits else ""),
+        f"将按 cursor-account-manager 规则修改 {len(names)} 个文件"
+        + ("：" + "、".join(names[:12]) + ("…" if len(names) > 12 else "") if names else ""),
     )
 
     was_running = running_cursor_paths()
@@ -516,51 +313,33 @@ def install_with_report(layout: sp.CursorLayout) -> dict:
         return _finish(report)
     report.step("close", "关闭 Cursor", "ok", "已关闭正在运行的 Cursor" if was_running else "Cursor 本来就没在运行")
 
-    changed_extensions = sp._planned_extension_names(layout, plan)
-    verify_detail: Dict[str, str] = {}
-
-    def validate() -> None:
-        status = sp.inspect_status(layout)
-        problems = []
-        if not status.installed:
-            problems.append("写入后没有任何 marker")
-        if status.ide_matches:
-            problems.append(f"仍有 {status.ide_matches} 处 client-type 是 ide")
-        if status.external_marker_count:
-            problems.append(f"外部标记 {status.external_marker_count}")
-        if status.legacy_client_markers or status.legacy_eligibility_markers:
-            problems.append("残留旧版标记")
-        if status.stream_capable and not status.stream_mode_installed:
-            problems.append("Stream 回路 7 条规则未全部生效")
-        if problems:
-            raise sp.SandToolError("；".join(problems))
-        sp._verify_extension_hashes(layout, changed_extensions)
-        checked = sp._verify_product_checksums(layout)
-        verify_detail["text"] = f"marker 齐全；扩展内嵌哈希已同步；product.json 完整性哈希 {checked} 项一致"
-
     try:
-        _written, backup_dir = sp._commit_plan(layout, plan, "install", validate)
-        report.backupDir = str(backup_dir)
+        applied = cam_patch.apply(layout.app_root)
     except PermissionError as exc:
         report.step("write", "写入补丁文件", "fail", f"没有写入权限：{exc}", "右键「以管理员身份运行」本工具后重试（Program Files 目录需要管理员）")
         return _finish(report)
-    except sp.SandToolError as exc:
-        text = str(exc)
-        fix = "重试一次；若反复失败，把这段文字发给群主"
-        if "发生变化" in text:
-            fix = "有别的程序（Cursor 自动更新 / 杀毒）在同时改文件：关掉 Cursor 自动更新，稍等再重试"
-        elif "校验失败" in text or "未全部生效" in text:
-            fix = "写入后校验不过，已自动回滚，文件恢复原样。多为 Cursor 构建与 3.18.9 官方版不一致，" + VERSION_FIX
-        report.step("write", "写入补丁文件并校验", "fail", text, fix)
+    except cam_patch.CamPatchError as exc:
+        report.step("write", "写入补丁文件并校验", "fail", str(exc), VERSION_FIX)
         return _finish(report)
     except Exception as exc:  # pragma: no cover
         report.step("write", "写入补丁文件", "fail", f"{type(exc).__name__}: {exc}", "把这段文字发给群主")
         return _finish(report)
-    report.step("write", "写入补丁文件", "ok", f"已写入 {len(plan)} 个文件，备份在 {backup_dir}")
-    report.step("verify", "写入后校验", "ok", verify_detail.get("text", "校验通过"))
+
+    backup = applied.get("backupDir") or ""
+    report.backupDir = str(backup)
+    written = applied.get("files") or names
+    count = len(written) if isinstance(written, list) else len(names)
+    report.step("write", "写入补丁文件", "ok", f"已写入 {count} 个文件" + (f"，备份在 {backup}" if backup else ""))
+    after = applied.get("after") if isinstance(applied.get("after"), dict) else None
+    if after and after.get("streamLifecycle"):
+        report.step("verify", "写入后校验", "ok", "插件校验通过：Stream 回路与子代理生命周期均已命中")
+    elif after and after.get("streamMode"):
+        report.step("verify", "写入后校验", "warn", "核心 Stream 回路已命中，但子代理生命周期未齐", REPATCH_FIX)
+    else:
+        report.step("verify", "写入后校验", "warn", "插件已写入，但 Stream 生命周期尚未判定为完整", VERSION_FIX)
     sp._mac_seal(layout)
 
-    report.rulesAfter = rule_status(layout)
+    report.rulesAfter = rule_status(layout, inspect_data=after)
     after_summary = summarize_rules(report.rulesAfter)
     report.step(
         "rules",
@@ -635,10 +414,17 @@ _REASON_HINTS = {
     "gate-check-failed": "本地路由判定抛错。重新打补丁并看日志。",
     "privacy-mode-unavailable": "读不到隐私模式设置，Cursor 尚未完成登录 / 初始化。稍后再试。",
     "gate-reader-unavailable": "runtimeCapabilities 缺 checkFeatureGate，构建不符。",
-    "mode-not-supported": "非 Agent 模式（Ask / Plan）在旧版补丁下回落云端。重新打 1.2.1。",
+    "mode-not-supported": "Ask / Plan 模式官方本地回路不支持。切到 Agent 才会走本地 Bot。不必因此再打补丁。",
     "model-not-supported": "该轮没有 modelId（模型未选）。",
     "private-model-not-supported": "使用了自带 API Key 的私有模型，官方本地回路不支持，走云端属正常。",
-    "simulated-message-not-supported": "旧版补丁：模拟用户消息回落云端。重新打 1.2.1。",
+    "simulated-message-not-supported": "Cursor 内部模拟消息（续写 / 系统注入），官方本地回路不支持，走云端属正常。不必再打补丁。",
+}
+
+# 1.2.1 补丁仍会故意回落云端：不算「补丁没打上」。
+_EXPECTED_CONNECT_REASONS = {
+    "simulated-message-not-supported",
+    "private-model-not-supported",
+    "mode-not-supported",
 }
 
 
@@ -711,8 +497,11 @@ def runtime_report(max_turns: int = 6) -> dict:
     for ln in lines:
         if "[error]" in ln or "unauthenticated" in ln or "usage limit" in ln.lower():
             head = ln[:220]
-            # 堆栈行与每次激活都会出现的 Git API 噪音不算错误。
+            # 堆栈行、Git API 噪音、Agent 工具参数写错（Invalid arguments）都不算补丁故障。
             if "at c:" in head or head.strip().startswith("at ") or "Failed to find a Git API" in head:
+                continue
+            low = head.lower()
+            if "invalid arguments" in low or "withstreamingeditparsedargs" in low or "nal.tool_call.failure" in low:
                 continue
             errors.append(head)
     recent_turns = turns[-max_turns:]
@@ -729,6 +518,8 @@ def runtime_report(max_turns: int = 6) -> dict:
         checks.append({"title": "agent host 被开关关闭", "ok": False, "detail": "cursorAgentHostEnabled gate off：agent_host_enablement 补丁没生效"})
     local_turns = [t for t in recent_turns if t["runtime"] == "managed-local"]
     connect_turns = [t for t in recent_turns if t["runtime"] != "managed-local"]
+    expected_connect = [t for t in connect_turns if t["reason"] in _EXPECTED_CONNECT_REASONS]
+    unexpected_connect = [t for t in connect_turns if t["reason"] not in _EXPECTED_CONNECT_REASONS]
 
     if not activated:
         verdict, headline = "unknown", "Cursor 还没启动 agent-host，无法判断。打开 Cursor 的 Agent 面板发一条消息后再验证"
@@ -736,10 +527,18 @@ def runtime_report(max_turns: int = 6) -> dict:
         verdict, headline = "broken", "补丁没有真正生效：本地回路没加载 / move_exec 未开，见下方检查项"
     elif not recent_turns:
         verdict, headline = "ready", "本地回路已加载、move_exec 已开；还没有对话记录——发一条消息再验证可看到走的是哪条路"
-    elif connect_turns and not local_turns:
+    elif unexpected_connect and not local_turns:
         verdict, headline = "broken", "最近几轮全部回落云端（connect），Bot 额度没用上，原因见每轮的提示"
-    elif connect_turns:
-        verdict, headline = "partial", f"最近 {len(recent_turns)} 轮里 {len(connect_turns)} 轮回落云端，原因见提示"
+    elif unexpected_connect:
+        verdict, headline = "partial", f"最近 {len(recent_turns)} 轮里 {len(unexpected_connect)} 轮回落云端，原因见提示"
+    elif expected_connect and local_turns:
+        verdict, headline = (
+            "working",
+            f"生效：最近 {len(recent_turns)} 轮里 {len(local_turns)} 轮走本地 Bot 回路；"
+            f"{len(expected_connect)} 轮是官方本地回路不支持的动作，走云端属正常",
+        )
+    elif expected_connect:
+        verdict, headline = "ready", "本地回路已加载；最近几轮都是官方不支持走本地的动作（见说明），发一条普通 Agent 消息再验证"
     else:
         verdict, headline = "working", f"生效：最近 {len(recent_turns)} 轮全部走本地 Bot 回路（managed-local / sand-client）"
     if unauth:

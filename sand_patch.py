@@ -332,6 +332,8 @@ class PatchStatus:
     local_actions_markers: int = 0
     subagent_local_markers: int = 0
     stream_capable: bool = False
+    stream_lifecycle: bool = False
+    tested_version: bool = False
 
     @property
     def installed(self) -> bool:
@@ -353,14 +355,13 @@ class PatchStatus:
 
     @property
     def stream_mode_installed(self) -> bool:
-        # 1.1.3 短路 createPromptSession、只强制 managed-local 却不开
-        # move_exec，都会让工具 get(CP._As) 落到 undefined.execute。
-        # 1.2.1 起还要求本地回路准入放宽（后台任务完成 / 子代理不再回落 connect），
-        # 否则旧补丁会在每次后台任务结束时弹 "unexpected error"、子代理 401。
+        # 插件口径：核心回路 + 子代理生命周期（sandStream.streamLifecycleInstalled）。
+        if self.stream_lifecycle:
+            return True
         return (
             self.managed_local_route_markers > 0
             and self.local_runtime_load_markers > 0
-            and self.direct_stream_markers == 0
+            and self.direct_stream_markers > 0
             and self.agent_host_enablement_markers > 0
             and self.agent_host_identity_markers > 0
             and self.move_exec_markers > 0
@@ -1917,126 +1918,52 @@ def _verify_product_checksums(layout: CursorLayout) -> int:
 
 
 def inspect_status(layout: CursorLayout) -> PatchStatus:
-    client_markers = 0
-    eligibility_markers = 0
-    managed_local_route_markers = 0
-    local_runtime_load_markers = 0
-    direct_stream_markers = 0
-    agent_host_enablement_markers = 0
-    agent_host_identity_markers = 0
-    move_exec_markers = 0
-    local_actions_markers = 0
-    subagent_local_markers = 0
-    legacy_client_markers = 0
-    legacy_eligibility_markers = 0
-    ide_matches = 0
-    external_sand_matches = 0
-    external_marker_count = 0
-    stream_capable = False
-    patched_files: List[Path] = []
-    for target in layout.target_paths:
-        content = _decode_js(target.read_bytes(), target)
-        if _content_has_stream_anchors(content) or (
-            SAND_MANAGED_LOCAL_ROUTE_MARKER in content
-            or SAND_LOCAL_RUNTIME_LOAD_MARKER in content
-            or SAND_DIRECT_STREAM_MARKER in content
-            or SAND_AGENT_HOST_ENABLEMENT_MARKER in content
-            or SAND_AGENT_HOST_IDENTITY_MARKER in content
-            or SAND_MOVE_EXEC_MARKER in content
-            or SAND_LOCAL_ACTIONS_MARKER in content
-            or SAND_SUBAGENT_LOCAL_MARKER in content
-        ):
-            stream_capable = True
-        client_count = (
-            content.count(SAND_CLIENT_MARKER)
-            + content.count(SAND_CLIENT_EXISTING_MARKER)
-            + content.count(SAND_HDRFIX_V2_MARKER)
-        )
-        eligibility_count = content.count(SAND_ELIGIBILITY_MARKER)
-        managed_local_route_count = content.count(SAND_MANAGED_LOCAL_ROUTE_MARKER)
-        local_runtime_load_count = content.count(SAND_LOCAL_RUNTIME_LOAD_MARKER)
-        direct_stream_count = content.count(SAND_DIRECT_STREAM_MARKER)
-        agent_host_enablement_count = content.count(
-            SAND_AGENT_HOST_ENABLEMENT_MARKER
-        )
-        agent_host_identity_count = content.count(
-            SAND_AGENT_HOST_IDENTITY_MARKER
-        )
-        move_exec_count = content.count(SAND_MOVE_EXEC_MARKER)
-        local_actions_count = content.count(SAND_LOCAL_ACTIONS_MARKER)
-        subagent_local_count = content.count(SAND_SUBAGENT_LOCAL_MARKER)
-        legacy_client_count = len(
-            re.findall(
-                rf"([\"'])sand\1{LEGACY_CLIENT_MARKER_PATTERN}",
-                content,
-            )
-        )
-        legacy_eligibility_count = content.count(
-            "return!1;" + LEGACY_SAND_ELIGIBILITY_MARKER
-        )
-        external_marker_count += max(
-            0,
-            len(re.findall(CLIENT_MARKER_GUARD_PATTERN, content))
-            - client_count
-            - legacy_client_count,
-        )
-        external_marker_count += max(
-            0,
-            len(re.findall(ELIGIBILITY_MARKER_GUARD_PATTERN, content))
-            - eligibility_count
-            - legacy_eligibility_count,
-        )
-        if (
-            client_count
-            + eligibility_count
-            + legacy_client_count
-            + legacy_eligibility_count
-            + managed_local_route_count
-            + local_runtime_load_count
-            + direct_stream_count
-            + agent_host_enablement_count
-            + agent_host_identity_count
-            + move_exec_count
-            + local_actions_count
-            + subagent_local_count
-        ):
-            patched_files.append(target)
-        client_markers += client_count
-        eligibility_markers += eligibility_count
-        legacy_client_markers += legacy_client_count
-        legacy_eligibility_markers += legacy_eligibility_count
-        managed_local_route_markers += managed_local_route_count
-        local_runtime_load_markers += local_runtime_load_count
-        direct_stream_markers += direct_stream_count
-        agent_host_enablement_markers += agent_host_enablement_count
-        agent_host_identity_markers += agent_host_identity_count
-        move_exec_markers += move_exec_count
-        local_actions_markers += local_actions_count
-        subagent_local_markers += subagent_local_count
-        for _key, rule in CLIENT_RULES:
-            for match in rule.finditer(content):
-                if match.group(3) == "sand":
-                    external_sand_matches += 1
-                else:
-                    ide_matches += 1
+    """补丁状态以 cursor-account-manager 的 inspect 为准。"""
+    import cam_patch
+
+    try:
+        data = cam_patch.inspect(layout.app_root)
+    except cam_patch.CamPatchError as exc:
+        raise SandToolError(str(exc)) from exc
+    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    stream = totals.get("stream") if isinstance(totals.get("stream"), dict) else {}
+
+    def n(key: str) -> int:
+        try:
+            return int(stream.get(key) or 0)
+        except Exception:
+            return 0
+
+    patched: List[Path] = []
+    for item in data.get("files") or []:
+        if not isinstance(item, dict) or not item.get("rel"):
+            continue
+        rel = Path(str(item["rel"]))
+        st = item.get("stream") if isinstance(item.get("stream"), dict) else {}
+        if int(item.get("sandAssignments") or 0) or any(int(st.get(k) or 0) for k in st):
+            patched.append((layout.app_root / rel).resolve())
+    version = str(data.get("version") or layout.version)
+    tested = cam_patch.is_tested_version(version)
     return PatchStatus(
-        client_markers=client_markers,
-        eligibility_markers=eligibility_markers,
-        ide_matches=ide_matches,
-        external_sand_matches=external_sand_matches,
-        external_marker_count=external_marker_count,
-        legacy_client_markers=legacy_client_markers,
-        legacy_eligibility_markers=legacy_eligibility_markers,
-        patched_files=tuple(patched_files),
-        managed_local_route_markers=managed_local_route_markers,
-        local_runtime_load_markers=local_runtime_load_markers,
-        direct_stream_markers=direct_stream_markers,
-        agent_host_enablement_markers=agent_host_enablement_markers,
-        agent_host_identity_markers=agent_host_identity_markers,
-        move_exec_markers=move_exec_markers,
-        local_actions_markers=local_actions_markers,
-        subagent_local_markers=subagent_local_markers,
-        stream_capable=stream_capable,
+        client_markers=n("client"),
+        eligibility_markers=n("eligibility"),
+        ide_matches=int(totals.get("unpatchedAssignments") or 0),
+        external_sand_matches=0,
+        external_marker_count=0,
+        legacy_client_markers=n("legacy"),
+        legacy_eligibility_markers=0,
+        patched_files=tuple(patched),
+        managed_local_route_markers=n("managedLocal"),
+        local_runtime_load_markers=n("runtimeLoad"),
+        direct_stream_markers=n("directStream"),
+        agent_host_enablement_markers=n("agentHost"),
+        agent_host_identity_markers=n("identity"),
+        move_exec_markers=n("moveExec"),
+        local_actions_markers=n("actionRoute") + n("completionWake"),
+        subagent_local_markers=n("subagentRoute") + n("subagentSession") + n("taskTool"),
+        stream_capable=tested or bool(data.get("streamPartial")) or bool(data.get("streamMode")),
+        stream_lifecycle=bool(data.get("streamLifecycle")),
+        tested_version=tested,
     )
 
 
@@ -2403,69 +2330,14 @@ def _mac_seal(layout: CursorLayout) -> None:
 
 
 def install(layout: CursorLayout) -> int:
-    before = inspect_status(layout)
-    if before.external_marker_count:
-        raise SandToolError(
-            "检测到其他 Sand 模式标记，本脚本不会接管或覆盖它；"
-            "请先用原安装方式卸载"
-        )
-    plan, _stats = _build_install_plan(layout)
-    if not plan:
-        if before.installed and (not before.stream_capable or before.stream_mode_installed):
-            close_cursor(layout)
-            start_cursor(layout)
-            return 0
-        raise SandToolError("当前 Cursor 版本未匹配到 Sand 客户端模式规则")
-    stream_hits = (
-        before.managed_local_route_markers + _stats.managed_local_route,
-        before.local_runtime_load_markers + _stats.local_runtime_load,
-        before.agent_host_identity_markers + _stats.agent_host_identity,
-        before.move_exec_markers + _stats.move_exec,
-        before.agent_host_enablement_markers + _stats.agent_host_enablement,
-        before.local_actions_markers + _stats.local_actions,
-        before.subagent_local_markers + _stats.subagent_local,
-    )
-    stream_capable = before.stream_capable or any(stream_hits)
-    # 只要七类锚点各命中 ≥1 就算完整（保持「全有或全无」防半装挂起）。
-    # 不要求精确计数：agentHost 在只有 desktop（无 glass）的安装上会是 1，
-    # 不同 commit 的 chunk 拆分也可能让某类命中数漂移，硬相等会误杀合法安装。
-    if stream_capable and not all(hit >= 1 for hit in stream_hits):
-        raise SandToolError(
-            "当前 Cursor 未完整匹配 Sand Stream 规则（有锚点缺失，拒绝半装）："
-            f"route={stream_hits[0]}, "
-            f"runtimeLoad={stream_hits[1]}, "
-            f"identity={stream_hits[2]}, "
-            f"moveExec={stream_hits[3]}, "
-            f"agentHost={stream_hits[4]}, "
-            f"localActions={stream_hits[5]}, "
-            f"subagentLocal={stream_hits[6]}"
-        )
+    """写入补丁：规则与文件改写走 cursor-account-manager，随后重签名并重启 Cursor。"""
+    import cam_patch
 
     close_cursor(layout)
-    changed_extensions = _planned_extension_names(layout, plan)
-
-    def validate() -> None:
-        status = inspect_status(layout)
-        if (
-            not status.installed
-            or status.ide_matches != 0
-            or status.external_marker_count != 0
-            or status.legacy_client_markers != 0
-            or status.legacy_eligibility_markers != 0
-            or (stream_capable and not status.stream_mode_installed)
-        ):
-            raise SandToolError(
-                "安装后状态校验失败："
-                f"markers={status.client_markers + status.eligibility_markers}, "
-                f"remainingIde={status.ide_matches}, "
-                f"streamMode={status.stream_mode_installed}, "
-                "remainingLegacy="
-                f"{status.legacy_client_markers + status.legacy_eligibility_markers}"
-            )
-        _verify_extension_hashes(layout, changed_extensions)
-        _verify_product_checksums(layout)
-
-    _commit_plan(layout, plan, "install", validate)
+    try:
+        cam_patch.apply(layout.app_root)
+    except cam_patch.CamPatchError as exc:
+        raise SandToolError(str(exc)) from exc
     _mac_seal(layout)
     close_cursor(layout)
     start_cursor(layout)
@@ -2473,32 +2345,14 @@ def install(layout: CursorLayout) -> int:
 
 
 def uninstall(layout: CursorLayout) -> int:
-    before = inspect_status(layout)
-    if before.external_marker_count:
-        raise SandToolError(
-            "检测到无法识别的 Sand 模式标记，拒绝修改；"
-            "请先用原安装方式卸载"
-        )
-    plan, _stats = _build_uninstall_plan(layout)
-    if not plan:
-        start_cursor(layout)
-        return 0
+    """回退补丁：同样走插件的 restore / 就地拆标记。"""
+    import cam_patch
 
     close_cursor(layout)
-    changed_extensions = _planned_extension_names(layout, plan)
-
-    def validate() -> None:
-        status = inspect_status(layout)
-        if status.installed or status.external_marker_count:
-            raise SandToolError(
-                "卸载后仍有 Sand marker："
-                f"{status.client_markers + status.eligibility_markers}，"
-                f"external={status.external_marker_count}"
-            )
-        _verify_extension_hashes(layout, changed_extensions)
-        _verify_product_checksums(layout)
-
-    _commit_plan(layout, plan, "uninstall", validate)
+    try:
+        cam_patch.restore(layout.app_root, force=True)
+    except cam_patch.CamPatchError as exc:
+        raise SandToolError(str(exc)) from exc
     _mac_seal(layout)
     close_cursor(layout)
     start_cursor(layout)
@@ -2556,7 +2410,7 @@ def collect_status_lines() -> List[Tuple[str, str]]:
     if not status.stream_capable:
         lines.append(
             (
-                "本机 Cursor 没有 3.18.9 agent-host 锚点，无法启用官方 Stream 回路",
+                "本机 Cursor 不在已测试列表（3.18.9 / 3.18.25 / 3.19.13），插件会尝试写入但可能因锚点不全而拒绝",
                 ANSI_YELLOW,
             )
         )

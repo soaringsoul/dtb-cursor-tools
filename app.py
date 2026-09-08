@@ -6,8 +6,10 @@
 """
 
 import datetime
+import errno
 import json
 import os
+import socketserver
 import subprocess
 import sys
 import time
@@ -16,9 +18,11 @@ import webview
 
 import resolve
 import sand_api
+import cam_patch
 import sand_patch
 import patch_report
 import browser_login
+import device_guard
 import local_cursor
 from accounts import AccountStore
 from accounts import format_export_line
@@ -30,9 +34,38 @@ from sand_api import verify as verify_token
 
 
 _STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "SandClaimer")
+_QUIET_HTTP_INSTALLED = False
 
-# 补丁锚定的 Cursor 版本。版本不符时给用户对应平台的直链去装这一版。
-REQUIRED_CURSOR_VERSION = "3.18.9"
+
+def is_client_disconnect(exc=None) -> bool:
+    """WebView / 浏览器掐掉本地 HTTP 连接时的常见错误，不是程序崩溃。"""
+    err = sys.exc_info()[1] if exc is None else exc
+    if isinstance(err, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+        return True
+    return isinstance(err, OSError) and getattr(err, "errno", None) in (
+        errno.ECONNRESET,
+        errno.EPIPE,
+        errno.ECONNABORTED,
+    )
+
+
+def install_quiet_local_http() -> None:
+    """压掉 pywebview 内置 wsgiref 在客户端断连时刷到终端的 traceback。"""
+    global _QUIET_HTTP_INSTALLED
+    if _QUIET_HTTP_INSTALLED:
+        return
+    orig = socketserver.BaseServer.handle_error
+
+    def handle_error(self, request, client_address):
+        if is_client_disconnect():
+            return
+        orig(self, request, client_address)
+
+    socketserver.BaseServer.handle_error = handle_error
+    _QUIET_HTTP_INSTALLED = True
+
+# 补丁锚定的 Cursor 版本（与 cursor-account-manager sandPatcher.TESTED_CURSOR_VERSIONS 一致）。
+REQUIRED_CURSOR_VERSION = cam_patch.required_version_label()
 _CURSOR_SHA = "2ba48ff3f7514cc4643c52ca9f7b3173d9b66137"
 _CURSOR_DL_BASE = f"https://downloads.cursor.com/production/{_CURSOR_SHA}"
 CURSOR_DOWNLOADS = {
@@ -146,6 +179,24 @@ class Api:
     def __init__(self) -> None:
         self._store = AccountStore()
         self._window: webview.Window | None = None
+        # 本机设备保护：每账号一个守护线程，名单记忆落在 _STATE_DIR/device_guard.json（重启不自动开）。
+        # 已打开隔离浏览器时，检测/踢下线复用那扇窗口，不会每轮再拉起浏览器。
+        self._guard = device_guard.DeviceGuardManager(
+            os.path.join(_STATE_DIR, "device_guard.json"),
+            fetch_sessions=browser_login.fetch_sessions_smart,
+            revoke_session=browser_login.revoke_session_smart,
+        )
+
+    def _auth_of(self, account_id: str):
+        """取账号的 (user_id, jwt, claims, item, error)；账号不存在或 token 解析失败时 error 非空。"""
+        item = self._store.get(account_id)
+        if not item or not item.get("token"):
+            return None, None, {}, None, "账号不存在"
+        try:
+            user_id, jwt, claims = parse_token(item["token"])
+        except Exception as exc:
+            return None, None, {}, item, f"token 解析失败：{exc}"
+        return user_id, jwt, claims or {}, item, ""
 
     def import_files(self) -> dict:
         """弹原生文件选择框，导入 JSON/文本账号文件。"""
@@ -204,12 +255,15 @@ class Api:
 
     def remove_account(self, account_id: str) -> list:
         self._store.remove(account_id)
+        self._guard.forget(account_id)
         return self._store.list()
 
     def remove_accounts(self, account_ids) -> dict:
         """批量删除勾选的账号，一次落盘。"""
         ids = [str(x) for x in (account_ids or [])]
         removed = self._store.remove_many(ids)
+        for account_id in ids:
+            self._guard.forget(account_id)
         return {"removed": removed, "accounts": self._store.list()}
 
     def set_label(self, account_id: str, label: str) -> bool:
@@ -218,6 +272,9 @@ class Api:
         return True
 
     def clear_accounts(self) -> list:
+        for account_id in [x.get("id") for x in self._store.list()]:
+            if account_id:
+                self._guard.forget(account_id)
         self._store.clear()
         return self._store.list()
 
@@ -332,10 +389,110 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": f"token 解析失败：{exc}"}
         try:
-            name = browser_login.open_with_token(user_id, jwt)
-            return {"ok": True, "browser": name}
+            opened = browser_login.open_with_token(user_id, jwt)
+            return {"ok": True, "browser": opened.get("name"), "reused": bool(opened.get("reused"))}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def _open_account_browser(self, account_id: str, url: str) -> dict:
+        """隔离浏览器 + 注入该号会话 cookie，打开指定 cursor.com 页面，浏览器留给用户。"""
+        user_id, jwt, _claims, _item, error = self._auth_of(account_id)
+        if error:
+            return {"ok": False, "error": error}
+        try:
+            opened = browser_login.open_with_token(user_id, jwt, url=url)
+            return {
+                "ok": True,
+                "browser": opened.get("name"),
+                "url": url,
+                "reused": bool(opened.get("reused")),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def open_dashboard(self, account_id: str) -> dict:
+        """进控制台：用该账号登录态开一个隔离浏览器到 Cursor 控制台（dashboard/spending），浏览器留给用户。
+
+        与 cursor-account-manager 插件的 openAccountDashboard 一致：独立 profile + CDP 注入
+        WorkosCursorSessionToken，不碰用户日常浏览器的登录态。
+        """
+        return self._open_account_browser(account_id, browser_login.CURSOR_DASHBOARD_SPENDING)
+
+    def open_sessions_page(self, account_id: str) -> dict:
+        """打开官方 Active Sessions 页：同样注入 token，供人手过校验或在网页里查看/踢设备。
+
+        每个账号只开一扇窗口：已打开则前置并跳到会话页，不新开。之后检测/踢下线复用这扇窗口。
+        """
+        return self._open_account_browser(account_id, browser_login.CURSOR_DASHBOARD_SESSIONS)
+
+    # ---- 登录设备：实时查看 / 踢下线 ----
+
+    def list_sessions(self, account_id: str) -> dict:
+        """查看设备：实时拉取该账号云端登录会话（GET /api/auth/sessions），不依赖上次验证的缓存。"""
+        user_id, jwt, claims, item, error = self._auth_of(account_id)
+        if error:
+            return {"ok": False, "error": error, **sand_api.empty_session_block(error)}
+        try:
+            block = browser_login.fetch_sessions_smart(user_id, jwt)
+        except Exception as exc:
+            block = sand_api.empty_session_block(str(exc))
+        local = self.local_identity()
+        is_local = bool(local.get("ok") and local.get("userId") == account_id)
+        block["sessions"] = sand_api.annotate_local_sessions(block.get("sessions"), is_local)
+        label = (item or {}).get("label") or ""
+        email = label if "@" in label else (claims.get("email") or user_id)
+        return {
+            "ok": not block.get("sessionError"),
+            "error": block.get("sessionError") or "",
+            "email": email,
+            # 本工具用的这张票是网页(web)还是客户端(session)会话：踢掉同类会话前给用户提个醒。
+            "tokenType": claims.get("type"),
+            **block,
+            "browserOpen": browser_login.has_live_browser(user_id),
+        }
+
+    def revoke_session(self, account_id: str, session_id: str, session_type: str = "") -> dict:
+        """踢下线：与官网 Revoke 相同的 POST body。列表里还在就不能算踢掉。"""
+        user_id, jwt, _claims, _item, error = self._auth_of(account_id)
+        if error:
+            return {"ok": False, "error": error, "status": 0}
+        try:
+            return browser_login.revoke_session_smart(user_id, jwt, session_id, session_type)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "status": 0}
+
+    # ---- 本机设备保护：按设定间隔检测，自动下线未保留设备 ----
+
+    def device_guard_start(self, account_id: str, keep_session_ids, interval_minutes=1) -> dict:
+        """开启保护：keep_session_ids 是要保留的 sessionId 列表（不能为空）。interval_minutes 为检测间隔（1–120 分钟）。"""
+        user_id, jwt, _claims, _item, error = self._auth_of(account_id)
+        if error:
+            return {"ok": False, "error": error}
+        try:
+            return self._guard.start(
+                account_id, user_id, jwt, keep_session_ids, interval_minutes=interval_minutes
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def device_guard_stop(self, account_id: str) -> dict:
+        try:
+            return self._guard.stop(account_id)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def device_guard_stop_all(self) -> dict:
+        try:
+            return self._guard.stop_all()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def device_guard_status(self) -> dict:
+        """account_id -> {running, keepIds, lastTickAt, lastError, kickedCount, lastKicked, sessionCount, …}。"""
+        try:
+            return self._guard.status()
+        except Exception:
+            return {}
 
     def switch_account(self, account_id: str, reset_machine_id: bool = False) -> dict:
         """一键切号：关闭本机 Cursor → 写入所选账号登录态（可选重置机器码）→ 重开 Cursor。"""
@@ -424,7 +581,7 @@ class Api:
         _write_json("settings.json", data or {})
         return True
 
-    # ---- 本机 Cursor Sand 补丁（复用 sand_patch，即原安装工具的成熟逻辑）----
+    # ---- 本机 Cursor Sand 补丁（cursor-account-manager 的 sandPatcher / sandStream）----
 
     def set_cursor_path(self, path: str) -> dict:
         """设置自定义 Cursor 路径（传空或 auto 恢复自动检测），随后返回最新补丁状态。"""
@@ -455,6 +612,8 @@ class Api:
                 "client": st.client_markers + st.legacy_client_markers,
                 "eligibility": st.eligibility_markers + st.legacy_eligibility_markers,
                 "requiredVersion": REQUIRED_CURSOR_VERSION,
+                "testedVersion": bool(st.tested_version),
+                "requiredVersions": list(cam_patch.TESTED_CURSOR_VERSIONS),
                 "os": os_key,
                 "downloadUrl": CURSOR_DOWNLOADS.get(os_key, CURSOR_DOWNLOADS["windows"]),
                 "downloadUrlSystem": CURSOR_DOWNLOADS["windows_system"] if os_key == "windows" else "",
@@ -527,18 +686,21 @@ class Api:
 
 def main() -> None:
     resolve.install()
+    install_quiet_local_http()
     api = Api()
     window = webview.create_window(
         "Sand 资格领取器",
         resource_path(os.path.join("web", "index.html")),
         js_api=api,
-        width=1160,
-        height=760,
-        min_size=(900, 600),
+        width=1220,
+        height=800,
+        min_size=(960, 640),
         background_color="#EAF2FF",
     )
     api._window = window
     webview.start()
+    # 窗口关闭后叫停所有保护线程并把「运行中」落成 False：下次打开只回填名单，不自动踢人。
+    api._guard.stop_all(wait=True, timeout=3.0)
 
 
 if __name__ == "__main__":

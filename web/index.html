@@ -7,10 +7,6 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="aurora" aria-hidden="true">
-    <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
-  </div>
-
   <main>
     <header class="glass hero">
       <div class="hero-title">
@@ -20,41 +16,30 @@
           <p class="sub">Grok Bot（Sand）批量领取 · 导入即自动验证账号 · Bot / Auto / 高级 三池额度分开看</p>
         </div>
       </div>
-      <div class="hero-stats">
-        <div class="stat"><b id="statTotal">0</b><span>账号</span></div>
-        <div class="stat"><b id="statAlive">0</b><span>有效</span></div>
-        <div class="stat"><b id="statDead">0</b><span>失效</span></div>
-        <div class="stat"><b id="statDone">0</b><span>已开通</span></div>
-        <div class="stat"><b id="statCard">0</b><span>需绑卡</span></div>
+      <div class="hero-side">
+        <div class="hero-stats">
+          <div class="stat"><b id="statTotal">0</b><span>账号</span></div>
+          <div class="stat"><b id="statAlive">0</b><span>有效</span></div>
+          <div class="stat"><b id="statDead">0</b><span>失效</span></div>
+          <div class="stat"><b id="statDone">0</b><span>已开通</span></div>
+          <div class="stat"><b id="statCard">0</b><span>需绑卡</span></div>
+        </div>
+        <button type="button" class="btn ghost icon-btn" id="btnHelp" title="使用说明">说明</button>
       </div>
     </header>
 
     <div class="notice glass" role="note">
       <span class="notice-tag">公益免费</span>
-      <span>本工具<b>完全免费、纯公益分享</b>，仅供学习交流，严禁任何形式的倒卖或收费。若你是<b>花钱购买</b>得到的，说明已被他人倒卖——作者从不收费，请立即向卖家<b>申请全额退款</b>，并留意文件是否被篡改植入后门。</span>
+      <span>本工具<b>完全免费、纯公益分享</b>，仅供学习交流，严禁倒卖或收费。若是<b>花钱买到</b>的，请向卖家<b>申请全额退款</b>，并留意文件是否被篡改。</span>
     </div>
 
-    <section class="glass card" id="patchCard">
-      <div class="card-head">
-        <h2>本机 Cursor 补丁 <span class="pill idle" id="patchPill">检测中…</span></h2>
-        <div class="actions">
-          <button class="btn" id="btnPatchCheck" title="重新逐条检测每条补丁规则在本机 Cursor 里的状态">检测</button>
-          <button class="btn" id="btnVerifyRuntime" title="读 Cursor 自己的 agent-host 日志：本地回路有没有加载、最近几轮走的是本地还是云端、有没有 401">验证生效</button>
-          <button class="btn primary" id="btnPatch">打补丁</button>
-          <button class="btn ghost" id="btnRestore">回退</button>
-        </div>
-      </div>
-      <p class="hint" id="patchInfo">正在检测本机 Cursor 安装…</p>
-      <div class="row-actions">
-        <input type="text" id="cursorPathInput" spellcheck="false"
-          placeholder="自定义 Cursor 路径（Cursor.exe / resources/app / 安装目录），留空=自动检测" />
-        <button class="btn" id="btnSetPath">设置路径</button>
-      </div>
-      <div id="patchRules" class="rules" hidden></div>
-      <div id="patchReport" class="report" hidden></div>
-    </section>
+    <nav class="tabs" id="tabBar" role="tablist" aria-label="功能页" data-active="accounts">
+      <button type="button" class="tab active" role="tab" id="tabAccounts" data-tab="accounts" aria-selected="true" aria-controls="panelAccounts">账号管理 <span class="tab-badge" id="tabAccountCount">0</span></button>
+      <button type="button" class="tab" role="tab" id="tabPatch" data-tab="patch" aria-selected="false" aria-controls="panelPatch">本机 Cursor 补丁 <span class="pill idle" id="patchPill">检测中…</span></button>
+    </nav>
 
-    <section class="glass card">
+    <div id="panelAccounts" class="tab-panel" role="tabpanel" aria-labelledby="tabAccounts">
+    <section class="glass card" id="importCard">
       <div class="card-head">
         <h2>导入账号</h2>
         <div class="actions">
@@ -63,34 +48,40 @@
           <button class="btn ghost" id="btnClear">清空</button>
         </div>
       </div>
-      <textarea id="tokenInput" spellcheck="false"
-        placeholder="粘贴 token，每行一个，支持：&#10;邮箱----user_01XXXX::eyJ...&#10;user_01XXXX::eyJ... 或裸 JWT&#10;也可直接粘贴 JSON / 点「导入文件」。"></textarea>
+      <div class="dropzone">
+        <textarea id="tokenInput" spellcheck="false"
+          placeholder="粘贴 token，每行一个。支持：&#10;邮箱----user_01XXXX::eyJ...&#10;user_01XXXX::eyJ... 或裸 JWT&#10;也可直接粘贴 JSON / 点「导入文件」。"></textarea>
+      </div>
       <div class="row-actions">
         <button class="btn primary" id="btnAddText">添加到列表</button>
         <label class="conc" title="导入后立刻联网验证这些号：是否有效、邮箱、套餐、订阅剩余时间、Bot / Auto / 高级 用量">
           <input type="checkbox" id="autoVerifyChk" checked /> 导入后自动验证
         </label>
-        <span class="hint" id="importHint">支持批量：一次粘贴多行 / 选多个 JSON 文件；「邮箱----token」格式会直接认出邮箱。</span>
+        <span class="hint" id="importHint">支持批量粘贴多行或选多个 JSON；「邮箱----token」会直接认出邮箱。</span>
       </div>
     </section>
 
-    <section class="glass card">
+    <section class="glass card" id="accountsCard">
       <div class="card-head">
-        <h2>账号列表 <span class="pill idle" id="countPill">0 个</span></h2>
-        <div class="actions">
+          <h2>账号列表 <span class="pill idle" id="countPill">0 个</span> <span class="pill guard" id="guardGlobal" role="button" tabindex="0" title="本机设备保护运行中：点击打开下方面板。收起面板不会停止保护。" hidden></span></h2>
+      </div>
+      <div class="toolbar">
+        <div class="toolbar-opts">
           <label class="conc" title="切号时同时重置本机机器码，防止多个小号被 Cursor 关联">
             <input type="checkbox" id="resetMidChk" /> 切号重置机器码
           </label>
           <label class="conc">并发
             <input type="number" id="concInput" min="1" max="10" value="3" />
           </label>
+          <span class="hint" id="selHint">未勾选时「验证 / 领取」对全部生效；「删除选中」只删勾选的。</span>
+        </div>
+        <div class="toolbar-acts">
           <button class="btn danger" id="btnRemoveSel" title="删除勾选的账号（不勾选不会删）">删除选中</button>
           <button class="btn" id="btnVerify" title="验证账号是否有效（过期 / 401 / 403），并刷新邮箱、套餐、订阅剩余、Bot / Auto / 高级 用量、云端登录会话。不做领取。">验证账号</button>
           <button class="btn" id="btnExport" title="全部导出为 txt：先按套餐分大类（Ultra / Pro+ / Pro / 团队 / Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，每段头部注明，段内按剩余时间从短到长">导出全部</button>
           <button class="btn primary" id="btnClaimAll" title="给账号领取 Sand（Grok Bot）资格；已开通的会直接跳过">批量领取</button>
         </div>
       </div>
-      <p class="hint" id="selHint">未勾选时「验证 / 领取」对全部账号生效；「删除选中」只删勾选的。</p>
       <div class="progress-wrap" id="progressWrap" hidden>
         <div class="progress"><i id="progressBar"></i></div>
         <span class="hint" id="progressText"></span>
@@ -110,9 +101,60 @@
           </thead>
           <tbody id="rows"></tbody>
         </table>
-        <p class="empty" id="emptyHint">还没有账号。粘贴 token 或导入 JSON 后点「添加到列表」。</p>
+        <div class="empty" id="emptyHint">
+          <span class="empty-mark">S</span>
+          <b>还没有账号</b>
+          <span>粘贴 token 或导入 JSON，再点「添加到列表」</span>
+        </div>
       </div>
     </section>
+
+    <section class="glass card" id="guardCard" hidden>
+      <div class="card-head">
+        <h2 id="guardTitle">本机设备保护</h2>
+        <div class="actions">
+          <button class="btn" id="guardBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
+          <button class="btn" id="guardRefresh" title="重新拉取云端登录设备">刷新</button>
+          <button class="btn" id="guardCancel" title="收起面板，不影响已启动的保护">收起</button>
+          <button class="btn primary" id="guardStart">启动保护</button>
+          <button class="btn danger" id="guardStop" hidden>停止保护</button>
+        </div>
+      </div>
+      <div class="guard-opts" id="guardOpts">
+        <label class="conc" for="guardInterval" title="保护开启后每隔这么多分钟拉一次云端设备列表">
+          检测间隔
+          <input type="number" id="guardInterval" min="1" max="120" step="1" value="1" />
+          分钟
+        </label>
+      </div>
+      <p class="hint guard-sub" id="guardSub"></p>
+      <div class="guard-body" id="guardBody"></div>
+      <p class="hint" id="guardFoot">开启时可设置检测间隔（1–120 分钟）。踢下线用和官网 Revoke 相同的请求；成功后设备应立刻从列表消失，还在就会自动重试。点「收起」只藏这块面板，保护继续在后台跑。改间隔需先停止再重新启动。</p>
+    </section>
+    </div>
+
+    <div id="panelPatch" class="tab-panel" role="tabpanel" aria-labelledby="tabPatch" hidden>
+    <section class="glass card" id="patchCard">
+      <div class="card-head">
+        <h2>本机 Cursor 补丁</h2>
+        <div class="actions">
+          <button class="btn" id="btnPatchCheck" title="重新逐条检测每条补丁规则在本机 Cursor 里的状态">检测</button>
+          <button class="btn" id="btnVerifyRuntime" title="读 Cursor 自己的 agent-host 日志：本地回路有没有加载、最近几轮走的是本地还是云端、有没有 401">验证生效</button>
+          <button class="btn primary" id="btnPatch">打补丁</button>
+          <button class="btn ghost" id="btnRestore">回退</button>
+        </div>
+      </div>
+      <p class="hint" id="patchInfo">正在检测本机 Cursor 安装…</p>
+      <div class="path-bar">
+        <span class="path-k">安装路径</span>
+        <input type="text" id="cursorPathInput" spellcheck="false"
+          placeholder="自定义 Cursor 路径（Cursor.exe / resources/app / 安装目录），留空=自动检测" />
+        <button class="btn" id="btnSetPath">设置路径</button>
+      </div>
+      <div id="patchRules" class="rules" hidden></div>
+      <div id="patchReport" class="report" hidden></div>
+    </section>
+    </div>
 
     <p class="foot">仅本机直连 Cursor 官方接口领取；token 不上传第三方。付费账号（Pro+/Ultra/Team）免绑卡，免费账号需验证信用卡。</p>
   </main>
@@ -136,8 +178,10 @@
           <li><b>批量领取</b>：给账号领 Sand（Grok Bot）资格，已开通的直接跳过；可设「并发」数并行。<b>勾选</b>部分账号则只处理勾选的，不勾则处理全部。</li>
           <li><b>删除选中</b>：批量删除勾选的账号；「清空」删全部。</li>
           <li><b>导出全部</b>：txt <b>先按套餐分大类</b>（Ultra → Pro+ → Pro → 团队 → Free），大类里再分「未用 Bot 额度 / 已用 Bot 额度 / 到期不续」，失效与未验证单独放最后；文件头给出各套餐数量，每段头部注明分类依据与每个号的到期 / 剩余 / Sand / 三池用量，段内按订阅剩余时间从短到长。账号行保持 <code>邮箱----user_id::token</code>，可原样再导入。</li>
-          <li><b>登录会话</b>：「验证账号」会同时拉取该号在 Cursor 云端的登录会话（客户端 / 网页）。账号列的会话标签可点开看创建与过期时间。接口不提供电脑名或 IP；「本机」标记来自本机 Cursor 登录库。不会踢掉任何会话。</li>
-          <li><b>本机 Cursor 补丁</b>：给本机 Cursor 打 / 回退 Sand 客户端模式补丁。面板里<b>逐条列出 11 条规则</b>各自的状态（已生效 / 未打 / 锚点缺失 / 部分生效）；点「打补丁」会给出<b>逐步报告</b>（定位 → 锚点 → 计划 → 关闭 Cursor → 写入 → 校验 → 重启 → 本机账号 Sand 资格），哪一步失败、为什么、怎么修都写在报告里，截图发群里即可。打完后点<b>「验证生效」</b>：读 Cursor 自己的 agent-host 日志，看本地回路是否加载、最近几轮是走本地（managed-local）还是回落云端（connect）以及原因。</li>
+          <li><b>进控制台</b>：用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending），可直接看用量 / 账单 / 设置。每个账号一个独立浏览器 profile，不影响你日常浏览器的登录。</li>
+          <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；每台都可<b>踢下线</b>（与官网 Revoke 相同，成功后应立刻从列表消失）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP；若该号正在本机 Cursor 登录，一条客户端会标<b>本机</b>，多条则标<b>可能是本机</b>。</li>
+          <li><b>本机设备保护</b>：点某行「本机保护」会在账号列表下方打开面板（不挡窗口，导入 / 验证 / 进控制台照常用）。开启前<b>勾选要保留的设备</b>并设置<b>检测间隔（分钟）</b>。若该号正在本机 Cursor 登录：云端只有一条客户端会话会标<b>本机</b>，多条则都标<b>可能是本机</b>（接口不区分电脑）。之后按间隔检测并<b>自动下线未保留设备</b>。点「收起」只藏面板，<b>不会停止保护</b>；点顶部「保护中」标签可再打开。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」（会回填上次的勾选与间隔）。</li>
+          <li><b>本机 Cursor 补丁</b>：给本机 Cursor 打 / 回退 Sand 客户端模式补丁，规则与 <code>cursor-account-manager</code> 插件完全同一套（兼容 3.18.9 / 3.18.25 / 3.19.13）。面板逐条列出请求头、本地回路、子代理生命周期等规则状态；点「打补丁」会关闭 Cursor、按插件逻辑写入并校验、重签名后重启。打完后点<b>「验证生效」</b>可读 Cursor 的 agent-host 日志。</li>
           <li><b>「显示成功其实没成功」的常见原因</b>：① 本机装了多个 Cursor，补丁打在 A、平时开的是 B（面板会标出正在运行的 Cursor 路径，用「设置路径」指到你实际用的那份）；② Cursor 自动更新把文件换回去了（关自动更新，重新打）；③ 补丁没问题但本机登录号没有 Sand 资格 / 票已失效（报告最后一步会告诉你）。</li>
         </ul>
         <p><b>额度怎么看</b></p>
@@ -154,9 +198,24 @@
 
   <div class="modal-mask" id="sessionMask" hidden>
     <div class="modal glass">
-      <h2 id="sessionTitle">登录会话</h2>
+      <h2 id="sessionTitle">登录设备</h2>
+      <p class="hint modal-sub" id="sessionSub"></p>
       <div class="modal-body" id="sessionBody"></div>
-      <div class="modal-actions"><button class="btn primary" id="sessionOk">知道了</button></div>
+      <p class="hint modal-foot">设备列表用登录票走接口。对应 dashboard Settings → Active Sessions。踢下线与官网 Revoke 相同，成功后应立刻从列表消失。接口不提供电脑名或 IP；若该号正在本机 Cursor 登录，一条客户端会标「本机」，多条则标「可能是本机」。</p>
+      <div class="modal-actions">
+        <button class="btn" id="sessionBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
+        <button class="btn" id="sessionRefresh" title="重新拉取云端登录设备">刷新</button>
+        <button class="btn primary" id="sessionOk">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="menuMask" hidden>
+    <div class="modal glass sheet">
+      <h2 id="menuTitle">操作</h2>
+      <p class="hint modal-sub" id="menuSub"></p>
+      <div class="menu-grid" id="menuBody"></div>
+      <div class="modal-actions"><button class="btn" id="menuClose">关闭</button></div>
     </div>
   </div>
 

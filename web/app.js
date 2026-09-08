@@ -6,6 +6,11 @@
 //   导入      → 自动「验证账号」（邮箱 / 套餐 / 订阅剩余 / 三池用量），不领取
 //   验证账号  → 判定 token 是否有效（过期 / 401 / 403 = 失效）+ 刷新信息，不领取
 //   批量领取  → 领 Sand（Grok Bot）资格，领完只轻量刷 Bot 周用量这一池
+//
+// 行内三个账号运维动作（与批量互不影响，忙碌时也可用）：
+//   进控制台  → 隔离浏览器注入登录态，落到 cursor.com/dashboard/spending
+//   查看设备  → 实时拉云端登录会话，可踢下线（最多约 10 分钟生效）
+//   本机保护  → 勾选保留设备并设置间隔后，Python 守护线程按分钟间隔检测并自动下线未保留设备
 
 let accounts = [];
 const rowState = {}; // id -> 行状态：kind + 有效性 + Bot/Auto/高级 三池 + 订阅
@@ -14,6 +19,7 @@ let busy = false;
 let settings = {}; // settings.json：hideHelp / autoVerify
 let lastPersisted = {}; // 上次落盘的稳定状态，避免瞬时失败把已保存的数据冲掉
 let localUserId = null; // 本机 Cursor 当前登录的 user_ id；未登录为 null
+let guardStatus = {}; // id -> device_guard_status() 的一项；running=true 表示该号的保护线程在跑
 
 const $ = (id) => document.getElementById(id);
 
@@ -259,16 +265,62 @@ function sessionTimeLabel(iso) {
   return text || "—";
 }
 
+function sessionTypePill(t) {
+  const cls = t === "client" ? "info" : t === "web" ? "amount" : "idle";
+  return `<span class="pill mini ${cls}">${esc(sessionTypeLabel(t))}</span>`;
+}
+
+function resolveLocalMark(s, opts) {
+  if (s && s.localMark) return s.localMark;
+  const id = opts && opts.accountId;
+  const rows = (opts && opts.sessions) || [];
+  if (!localUserId || !id || id !== localUserId || (s && s.type) !== "client") return "";
+  const n = rows.filter((x) => x.type === "client").length;
+  if (n === 1) return "local";
+  if (n > 1) return "maybe-local";
+  return "";
+}
+
+// 本工具用的登录票是哪一类会话：JWT type=web → 网页会话；type=session → 客户端会话。
+function tokenSessionKind(tokenType) {
+  const t = String(tokenType || "").toLowerCase();
+  if (t === "web") return "web";
+  if (t === "session") return "client";
+  return null;
+}
+
+function accountMail(a, id) {
+  if (a && a.label && a.label.includes("@")) return a.label;
+  return (a && (a.label || a.id)) || id;
+}
+
+function guardPill(a) {
+  const g = guardStatus[a.id];
+  if (!g || !g.running) return "";
+  const kicked = g.kickedCount || 0;
+  const tip =
+    `本机设备保护运行中：${guardIntervalLabel(g.intervalMinutes)}，自动下线未保留设备。保留 ${(g.keepIds || []).length} 台，已踢 ${kicked} 台` +
+    (g.lastTickAt ? `，最近检测 ${fmtTs(toMs(g.lastTickAt))}` : "") +
+    (g.lastError ? `。⚠ ${g.lastError}` : "") +
+    "。点击查看详情";
+  return (
+    `<button type="button" class="pill guard mini${g.lastError ? " has-error" : ""}" data-act="guardinfo" data-id="${esc(a.id)}" title="${esc(tip)}">` +
+    `<i class="dot"></i>保护中${kicked ? ` · 已踢 ${kicked}` : ""}</button>`
+  );
+}
+
 function sessionPills(a, st) {
   const bits = [];
   if (localUserId && a.id === localUserId) {
     bits.push(`<span class="pill info mini" title="本机 Cursor 当前登录的是这个号">本机</span>`);
   }
+  bits.push(guardPill(a));
   if (st && st.alive === false) return bits.join("");
   if (!st || !Object.prototype.hasOwnProperty.call(st, "sessionCount")) return bits.join("");
   if (st.sessionError) {
+    const waf = isWafError(st.sessionError, st.sessionWaf);
     bits.push(
-      `<button type="button" class="pill idle mini" data-act="sessions" data-id="${esc(a.id)}" title="${esc(st.sessionError)}">会话 —</button>`
+      `<button type="button" class="pill idle mini" data-act="sessions" data-id="${esc(a.id)}" title="${esc(st.sessionError)}（点击${waf ? "可去浏览器过校验" : "实时重拉"}）">${waf ? "设备校验" : "设备 —"}</button>`
     );
     return bits.join("");
   }
@@ -276,39 +328,726 @@ function sessionPills(a, st) {
   const c = st.sessionClientCount || 0;
   const w = st.sessionWebCount || 0;
   bits.push(
-    `<button type="button" class="pill info mini" data-act="sessions" data-id="${esc(a.id)}" title="查看云端登录会话">` +
-      `${n} 会话 · 客户端${c} / 网页${w}</button>`
+    `<button type="button" class="pill info mini" data-act="sessions" data-id="${esc(a.id)}" title="查看云端登录设备（实时拉取，可踢下线）">` +
+      `${n} 设备 · 客户端${c} / 网页${w}</button>`
   );
   return bits.join("");
 }
 
-function openSessions(id) {
-  const a = accounts.find((x) => x.id === id);
-  const st = rowState[id] || {};
-  const mail = a && a.label && a.label.includes("@") ? a.label : (a && (a.label || a.id)) || id;
-  $("sessionTitle").textContent = "登录会话 · " + mail;
-  const rows = Array.isArray(st.sessions) ? st.sessions : [];
+// 实时拉到的设备列表回写到行状态，让账号列的设备标签立刻跟上（踢下线后数量会变）。
+function applySessionBlock(id, res) {
+  if (!res || !Object.prototype.hasOwnProperty.call(res, "sessionCount")) return;
+  const prev = rowState[id];
+  if (!prev) return;
+  rowState[id] = {
+    ...prev,
+    sessions: Array.isArray(res.sessions) ? res.sessions : [],
+    sessionCount: res.sessionCount,
+    sessionClientCount: res.sessionClientCount,
+    sessionWebCount: res.sessionWebCount,
+    sessionError: res.sessionError || "",
+    sessionWaf: !!res.sessionWaf,
+  };
+  schedulePersist();
+}
+
+// ---- 查看设备：实时拉取 + 踢下线 ----
+
+const sessionModal = { id: null, loading: false, error: "", waf: false, sessions: [], email: "", tokenType: null, confirmSid: "", busySid: "", via: "", browserOpen: false };
+
+function isWafError(err, wafFlag) {
+  if (wafFlag) return true;
+  const text = String(err || "");
+  return text.includes("人机校验") || /vercel|checkpoint/i.test(text);
+}
+
+function wafHintHtml() {
+  return (
+    `<div class="waf-box">` +
+    `<p class="hint">这不是 token 失效。每个账号只开一扇隔离浏览器：点一次打开，之后检测和踢下线都复用这扇窗口，不会每 30 秒再开新的。请在那个窗口里拖动完成校验，并保持 cursor.com 标签不要关。已经打开过就直接去那个窗口，不必再点。</p>` +
+    `<button type="button" class="btn primary" data-sact="browser">打开 / 显示浏览器</button>` +
+    `</div>`
+  );
+}
+
+function sessionRowHtml(s, opts) {
+  const sid = s.sessionId || "";
+  const short = sid.slice(0, 8);
+  const tags = [sessionTypePill(s.type)];
+  const localMark = resolveLocalMark(s, opts);
+  if (localMark === "local") {
+    tags.push(`<span class="pill mini ok" title="本机 Cursor 正登录此号，且云端只有一条客户端会话">本机</span>`);
+  } else if (localMark === "maybe-local") {
+    tags.push(`<span class="pill mini warn" title="本机 Cursor 正登录此号。接口不区分电脑，这些客户端里有一台是这台机器，请自行确认后再勾选保留">可能是本机</span>`);
+  }
+  if (opts && opts.mineKind && s.type === opts.mineKind) {
+    tags.push(`<span class="pill mini warn" title="本工具用的登录票是${esc(sessionTypeLabel(opts.mineKind))}会话，这一条可能就是它：踢掉后该号在本工具里会失效">同类·可能是本工具</span>`);
+  }
+  if (opts && opts.keepIds) {
+    tags.push(
+      opts.keepIds.has(sid)
+        ? `<span class="pill mini ok">保留</span>`
+        : `<span class="pill mini bad" title="不在保留名单里，检测到就会被踢下线">待踢</span>`
+    );
+  }
+  return (
+    `<div class="session-main">` +
+    `<div class="session-head">${tags.join(" ")} <span class="sid mono" title="${esc(sid)}">${esc(short)}</span></div>` +
+    `<div class="hint">创建 ${esc(sessionTimeLabel(s.createdAt))}　过期 ${esc(sessionTimeLabel(s.expiresAt))}</div>` +
+    `</div>`
+  );
+}
+
+function renderSessionModal() {
+  const m = sessionModal;
+  const rows = Array.isArray(m.sessions) ? m.sessions : [];
+  $("sessionTitle").textContent = "登录设备 · " + (m.email || m.id || "");
+  $("sessionSub").textContent = m.loading
+    ? "正在实时拉取云端登录设备…"
+    : rows.length
+      ? `共 ${rows.length} 台设备` + (m.via === "browser" ? " · 经已打开的隔离浏览器读取" : "")
+      : m.via === "browser"
+        ? "经已打开的隔离浏览器读取"
+        : "";
   let html = "";
-  if (st.sessionError) html += `<p>${esc(st.sessionError)}</p>`;
-  if (!rows.length && !st.sessionError) html += `<p>没有返回任何会话。</p>`;
+  if (m.loading) {
+    html += `<p class="modal-state"><span class="pill run">读取中…</span></p>`;
+  } else if (m.error) {
+    html += `<p class="modal-state"><span class="pill bad">读取失败</span> ${esc(m.error)}</p>`;
+    if (isWafError(m.error, m.waf)) html += wafHintHtml();
+  } else if (!rows.length) {
+    html += `<p class="modal-state">当前没有登录设备。</p>`;
+  }
   if (rows.length) {
+    const mineKind = tokenSessionKind(m.tokenType);
     html += `<ul class="session-list">`;
     for (const s of rows) {
       const sid = s.sessionId || "";
-      const short = sid.slice(0, 8);
-      html +=
-        `<li><div><b>${esc(sessionTypeLabel(s.type))}</b> · <span class="sid" title="${esc(sid)}">${esc(short)}</span></div>` +
-        `<div class="hint">创建 ${esc(sessionTimeLabel(s.createdAt))}　过期 ${esc(sessionTimeLabel(s.expiresAt))}</div></li>`;
+      let right;
+      if (m.confirmSid === sid) {
+        const warn =
+          (rows.length <= 1 ? " 这是仅剩的一台，很可能就是本工具正在使用的会话，踢掉后该号在本工具里会失效，需重新导入。" : "") +
+          (mineKind && s.type === mineKind && rows.length > 1 ? " 它与本工具使用的登录票同类型，若正是那一条，踢掉后该号在本工具里会失效。" : "");
+        right =
+          `<div class="kick-confirm"><div class="hint">确定踢掉这台设备？成功后应立刻从列表消失。${esc(warn)}</div>` +
+          `<div class="kick-actions"><button type="button" class="btn tiny" data-sact="cancel">取消</button>` +
+          `<button type="button" class="btn tiny danger" data-sact="confirm" data-sid="${esc(sid)}" data-stype="${esc(s.typeRaw || s.type || "")}">确认踢下线</button></div></div>`;
+      } else {
+        const dis = m.busySid ? " disabled" : "";
+        right = `<button type="button" class="btn tiny danger" data-sact="kick" data-sid="${esc(sid)}"${dis}>${m.busySid === sid ? "踢下线中…" : "踢下线"}</button>`;
+      }
+      html += `<li class="session-row${m.confirmSid === sid ? " confirming" : ""}">${sessionRowHtml(s, { mineKind, accountId: m.id, sessions: rows })}${right}</li>`;
     }
     html += `</ul>`;
   }
-  html += `<p class="hint">Cursor 接口不提供电脑名或 IP。本机标记来自本机登录库，无法对应到上面某一条会话。</p>`;
   $("sessionBody").innerHTML = html;
+  $("sessionRefresh").disabled = !!m.loading;
+  const browserBtn = $("sessionBrowser");
+  if (browserBtn) {
+    browserBtn.disabled = !!m.loading || !m.id;
+    browserBtn.textContent = m.browserOpen || m.via === "browser" ? "显示已打开的浏览器" : isWafError(m.error, m.waf) ? "去浏览器过校验" : "浏览器打开";
+  }
+}
+
+async function loadSessions() {
+  const id = sessionModal.id;
+  if (!id) return;
+  sessionModal.loading = true;
+  sessionModal.error = "";
+  sessionModal.waf = false;
+  sessionModal.via = "";
+  sessionModal.confirmSid = "";
+  renderSessionModal();
+  let res = null;
+  try {
+    res = await api().list_sessions(id);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  if (sessionModal.id !== id) return; // 用户已切到别的号 / 关掉了
+  sessionModal.loading = false;
+  if (res && res.email) {
+    sessionModal.email = res.email;
+    applyEmail(id, res.email);
+  }
+  if (res && res.tokenType !== undefined) sessionModal.tokenType = res.tokenType;
+  sessionModal.via = (res && res.sessionVia) || "";
+  sessionModal.browserOpen = !!(res && res.browserOpen) || sessionModal.via === "browser";
+  if (!res || !res.ok) {
+    sessionModal.error = (res && res.error) || "读取设备失败";
+    sessionModal.waf = !!(res && res.sessionWaf) || isWafError(sessionModal.error);
+    sessionModal.sessions = Array.isArray(res && res.sessions) ? res.sessions : [];
+  } else {
+    sessionModal.waf = false;
+    sessionModal.sessions = Array.isArray(res.sessions) ? res.sessions : [];
+  }
+  applySessionBlock(id, res);
+  renderSessionModal();
+  render();
+}
+
+function openSessions(id) {
+  const a = accounts.find((x) => x.id === id);
+  sessionModal.id = id;
+  sessionModal.email = accountMail(a, id);
+  sessionModal.sessions = [];
+  sessionModal.tokenType = a && a.tokenType ? a.tokenType : null;
+  sessionModal.confirmSid = "";
+  sessionModal.busySid = "";
+  sessionModal.error = "";
+  sessionModal.waf = !!(a && rowState[id] && rowState[id].sessionWaf);
   $("sessionMask").hidden = false;
+  loadSessions();
 }
 
 function hideSessions() {
   $("sessionMask").hidden = true;
+  sessionModal.id = null;
+}
+
+async function kickSession(sid, stype) {
+  const id = sessionModal.id;
+  if (!id || !sid) return;
+  sessionModal.busySid = sid;
+  sessionModal.confirmSid = "";
+  renderSessionModal();
+  toast("正在踢下线…");
+  let res = null;
+  try {
+    res = await api().revoke_session(id, sid, stype || "");
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  sessionModal.busySid = "";
+  if (sessionModal.id === id) await loadSessions();
+  const still = (sessionModal.sessions || []).some((s) => s.sessionId === sid);
+  if (res && res.ok && still) toast("已提交踢下线，但列表里还在，没有真正踢掉，将自动重试");
+  else if (res && res.ok) toast("已踢下线");
+  else if (res && (res.waf || isWafError(res.error))) toast("踢下线被网站人机校验拦截，可点「去浏览器过校验」在官方页手动操作");
+  else toast("踢下线失败：" + ((res && res.error) || "未知原因"));
+}
+
+function onSessionBodyClick(e) {
+  const btn = e.target.closest("button[data-sact]");
+  if (!btn) return;
+  const act = btn.getAttribute("data-sact");
+  const sid = btn.getAttribute("data-sid") || "";
+  if (act === "kick") {
+    sessionModal.confirmSid = sid;
+    renderSessionModal();
+  } else if (act === "cancel") {
+    sessionModal.confirmSid = "";
+    renderSessionModal();
+  } else if (act === "confirm") {
+    kickSession(sid, btn.getAttribute("data-stype") || "");
+  } else if (act === "browser") {
+    openSessionsPage(sessionModal.id);
+  }
+}
+
+// ---- 进控制台 ----
+
+function browserName(name) {
+  return name === "edge" ? "Edge" : "Chrome";
+}
+
+async function openDashboard(id) {
+  toast("正在打开浏览器并注入登录，请稍候…");
+  try {
+    const res = await api().open_dashboard(id);
+    if (res && res.ok) {
+      toast(
+        res.reused
+          ? `已复用已打开的 ${browserName(res.browser)}，没有新开窗口`
+          : `已在 ${browserName(res.browser)} 打开 Cursor 控制台，浏览器会保持打开；之后检测复用这扇窗口`
+      );
+    } else {
+      toast("打开失败：" + ((res && res.error) || "未知原因"));
+    }
+  } catch (e) {
+    toast("打开失败：" + String(e));
+  }
+}
+
+async function openSessionsPage(id) {
+  if (!id) return;
+  toast("正在打开官方会话页并注入登录，请稍候…");
+  try {
+    const res = await api().open_sessions_page(id);
+    if (res && res.ok) {
+      toast(
+        res.reused
+          ? `已回到已打开的 ${browserName(res.browser)}，没有新开窗口。检测会继续用它读设备`
+          : `已在 ${browserName(res.browser)} 打开官方会话页。请保持窗口不要关，之后检测都走这扇窗口`
+      );
+    } else {
+      toast("打开失败：" + ((res && res.error) || "未知原因"));
+    }
+  } catch (e) {
+    toast("打开失败：" + String(e));
+  }
+}
+
+// ---- 本机设备保护：开启前勾选保留哪些设备、设置检测间隔；开启后按间隔检测并自动下线未保留设备 ----
+
+const guardModal = {
+  id: null,
+  loading: false,
+  error: "",
+  waf: false,
+  via: "",
+  browserOpen: false,
+  sessions: [],
+  checked: new Set(),
+  prechecked: false,
+  running: false,
+  email: "",
+  tokenType: null,
+  warnEmpty: false,
+  timer: null,
+};
+
+function updateGuardGlobal() {
+  const el = $("guardGlobal");
+  if (!el) return;
+  const running = Object.values(guardStatus).filter((g) => g && g.running);
+  if (!running.length) {
+    el.hidden = true;
+    return;
+  }
+  const kicked = running.reduce((n, g) => n + (g.kickedCount || 0), 0);
+  el.innerHTML = `<i class="dot"></i>保护中 ${running.length} 个账号${kicked ? ` · 已踢 ${kicked} 台` : ""}`;
+  el.hidden = false;
+}
+
+// 只在「谁在跑 / 踢了多少 / 有没有报错」变化时才重画表格，避免每两秒把整张表刷一遍。
+function guardSignature(map) {
+  return JSON.stringify(
+    Object.entries(map || {})
+      .map(([k, v]) => [k, !!(v && v.running), (v && v.kickedCount) || 0, v && v.lastError ? 1 : 0])
+      .sort()
+  );
+}
+
+async function refreshGuardStatus(force) {
+  let next;
+  try {
+    next = (await api().device_guard_status()) || {};
+  } catch (e) {
+    return;
+  }
+  const changed = guardSignature(next) !== guardSignature(guardStatus);
+  guardStatus = next;
+  updateGuardGlobal();
+  if (changed || force) render();
+  if (guardModal.id && isGuardPanelOpen()) {
+    const g = guardStatus[guardModal.id];
+    const nowRunning = !!(g && g.running);
+    if (guardModal.running && !nowRunning) {
+      // 线程自己停了（如登录态失效自动停止）：切回勾选视图并提示原因。
+      guardModal.running = false;
+      guardModal.prechecked = false;
+      if (g && g.lastError) toast("本机保护已停止：" + g.lastError);
+      loadGuardSessions();
+    } else {
+      renderGuardModal();
+    }
+  }
+}
+
+function guardTimeLabel(ts) {
+  const ms = toMs(ts);
+  if (isNaN(ms)) return "—";
+  const p2 = (x) => String(x).padStart(2, "0");
+  const d = new Date(ms);
+  return `${fmtTs(ms)}:${p2(d.getSeconds())}`;
+}
+
+const GUARD_INTERVAL_MIN_DEFAULT = 1;
+const GUARD_INTERVAL_MIN_MAX = 120;
+
+function cleanIntervalMinutes(value) {
+  let n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 1) n = GUARD_INTERVAL_MIN_DEFAULT;
+  if (n > GUARD_INTERVAL_MIN_MAX) n = GUARD_INTERVAL_MIN_MAX;
+  return n;
+}
+
+function readGuardIntervalMinutes() {
+  const el = $("guardInterval");
+  return cleanIntervalMinutes(el && el.value);
+}
+
+function fillGuardIntervalMinutes(value) {
+  const el = $("guardInterval");
+  if (el) el.value = String(cleanIntervalMinutes(value));
+}
+
+function guardIntervalLabel(minutes) {
+  return `每 ${cleanIntervalMinutes(minutes)} 分钟检测一次`;
+}
+
+function renderGuardModal() {
+  const m = guardModal;
+  const id = m.id;
+  if (!id) return;
+  const g = guardStatus[id] || {};
+  const rows = Array.isArray(m.sessions) ? m.sessions : [];
+  const mineKind = tokenSessionKind(m.tokenType);
+  const isLocal = !!(localUserId && id === localUserId);
+  $("guardTitle").textContent = "本机设备保护 · " + (m.email || id);
+  $("guardStart").hidden = m.running;
+  $("guardStop").hidden = !m.running;
+  $("guardCancel").textContent = "收起";
+  $("guardRefresh").disabled = !!m.loading;
+  let html = "";
+
+  if (m.running) {
+    const keepIds = new Set(g.keepIds || []);
+    $("guardSub").innerHTML = `<span class="pill guard"><i class="dot"></i>保护中</span> ${guardIntervalLabel(g.intervalMinutes)}` + (m.via === "browser" ? "，经已打开的隔离浏览器读取" : "，未保留设备会被自动踢下线");
+    html += `<div class="guard-stats">`;
+    html += `<div class="gstat"><span>启动时间</span><b>${esc(guardTimeLabel(g.startedAt))}</b></div>`;
+    html += `<div class="gstat"><span>最近检测</span><b>${esc(guardTimeLabel(g.lastTickAt))}</b></div>`;
+    html += `<div class="gstat"><span>检测轮次</span><b>${esc(String(g.tickCount || 0))}</b></div>`;
+    html += `<div class="gstat"><span>当前设备</span><b>${g.sessionCount == null ? "—" : esc(String(g.sessionCount))}</b></div>`;
+    html += `<div class="gstat"><span>保留设备</span><b>${esc(String(keepIds.size))}</b></div>`;
+    html += `<div class="gstat kicked"><span>已踢下线</span><b>${esc(String(g.kickedCount || 0))} 台</b></div>`;
+    html += `</div>`;
+    if (g.lastError) {
+      html += `<p class="modal-state"><span class="pill warn">最近一轮异常</span> ${esc(g.lastError)}</p>`;
+      if (isWafError(g.lastError)) html += wafHintHtml();
+    }
+    if (Array.isArray(g.lastKicked) && g.lastKicked.length) {
+      html += `<p class="guard-sec">最近踢下线</p><ul class="session-list compact">`;
+      for (const k of g.lastKicked) {
+        html += `<li class="session-row"><div class="session-main"><div class="session-head">${sessionTypePill(k.type)} <span class="sid mono" title="${esc(k.sessionId || "")}">${esc(String(k.sessionId || "").slice(0, 8))}</span></div>` +
+          `<div class="hint">创建 ${esc(sessionTimeLabel(k.createdAt))}　踢于 ${esc(guardTimeLabel(k.at))}</div></div></li>`;
+      }
+      html += `</ul>`;
+    }
+    html += `<p class="guard-sec">设备列表${m.loading ? "（刷新中…）" : ""}</p>`;
+    if (m.error) {
+      html += `<p class="modal-state"><span class="pill bad">读取失败</span> ${esc(m.error)}</p>`;
+      if (isWafError(m.error, m.waf)) html += wafHintHtml();
+    }
+    if (rows.length) {
+      html += `<ul class="session-list compact">`;
+      for (const s of rows) html += `<li class="session-row">${sessionRowHtml(s, { mineKind, keepIds, accountId: id, sessions: rows })}</li>`;
+      html += `</ul>`;
+    } else if (!m.loading && !m.error) {
+      html += `<p class="modal-state">当前没有登录设备。</p>`;
+    }
+    html += `<p class="hint">保留名单里的设备不会被动；名单以外的（含开启后新登录进来的）检测到即踢。列表里还在就说明没踢掉，会自动重试。要改名单：先停止保护，再重新勾选启动。</p>`;
+  } else {
+    const n = rows.length;
+    const checkedN = rows.filter((s) => m.checked.has(s.sessionId)).length;
+    $("guardSub").textContent = m.loading
+      ? "正在实时拉取云端登录设备…"
+      : n
+        ? `共 ${n} 台设备 · 勾选要保留的设备（已勾选 ${checkedN} 台），其余会在开启后被自动踢下线`
+        : "";
+    if (m.loading) {
+      html += `<p class="modal-state"><span class="pill run">读取中…</span></p>`;
+    } else if (m.error) {
+      html += `<p class="modal-state"><span class="pill bad">读取失败</span> ${esc(m.error)}</p>`;
+      if (isWafError(m.error, m.waf)) html += wafHintHtml();
+    } else if (!n) {
+      html += `<p class="modal-state">当前没有登录设备，无需保护。</p>`;
+    }
+    if (n) {
+      html += `<ul class="session-list">`;
+      for (const s of rows) {
+        const sid = s.sessionId || "";
+        const on = m.checked.has(sid) ? " checked" : "";
+        html +=
+          `<li class="session-row selectable${on ? " kept" : ""}"><label class="session-pick">` +
+          `<input type="checkbox" class="guardchk" data-sid="${esc(sid)}"${on} />` +
+          sessionRowHtml(s, { mineKind, accountId: id, sessions: rows }) +
+          `<span class="pick-tag ${on ? "ok" : "bad"}">${on ? "保留" : "将被踢"}</span></label></li>`;
+      }
+      html += `</ul>`;
+      if (m.warnEmpty && !checkedN) {
+        html += `<p class="modal-state"><span class="pill bad">至少保留一台</span> 一台都不保留会把所有设备（含本机 Cursor）全部踢下线。</p>`;
+      }
+      const hints = [];
+      if (isLocal) {
+        const nClient = rows.filter((s) => s.type === "client").length;
+        if (nClient === 1) hints.push("已标出本机：云端只有一条客户端会话，对应本机 Cursor。");
+        else if (nClient > 1) hints.push("本机 Cursor 正登录此号：客户端会话都标了「可能是本机」（接口不区分电脑）。请自行确认后勾选要保留的；默认已勾全部客户端。");
+      }
+      if (g.wasRunning && (g.keepIds || []).length) hints.push("上次退出时保护开着：已回填当时的勾选，需重新点「启动保护」。");
+      else if (g.saved && (g.keepIds || []).length) hints.push("已回填上次的勾选。");
+      if (mineKind) {
+        hints.push(`本工具用的是${sessionTypeLabel(mineKind)}登录票，它也对应上面某一条同类型会话：若不保留任何同类型会话，保护会在最多 10 分钟后随票失效并自动停止。`);
+      }
+      if (hints.length) html += `<p class="hint">${hints.map(esc).join("<br />")}</p>`;
+    }
+  }
+  $("guardBody").innerHTML = html;
+  const iv = $("guardInterval");
+  if (iv) iv.disabled = !!m.running;
+  if (m.running && g.intervalMinutes != null) fillGuardIntervalMinutes(g.intervalMinutes);
+  const browserBtn = $("guardBrowser");
+  if (browserBtn) {
+    const viaBrowser = m.via === "browser" || m.browserOpen;
+    const waf = isWafError(m.error, m.waf) || isWafError((g && g.lastError) || "");
+    browserBtn.disabled = !!m.loading || !id;
+    browserBtn.textContent = viaBrowser ? "显示已打开的浏览器" : waf ? "去浏览器过校验" : "浏览器打开";
+  }
+}
+
+async function loadGuardSessions() {
+  const id = guardModal.id;
+  if (!id) return;
+  guardModal.loading = true;
+  guardModal.error = "";
+  guardModal.waf = false;
+  guardModal.via = "";
+  renderGuardModal();
+  let res = null;
+  try {
+    res = await api().list_sessions(id);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  if (guardModal.id !== id) return;
+  guardModal.loading = false;
+  if (res && res.email) {
+    guardModal.email = res.email;
+    applyEmail(id, res.email);
+  }
+  if (res && res.tokenType !== undefined) guardModal.tokenType = res.tokenType;
+  guardModal.via = (res && res.sessionVia) || "";
+  guardModal.browserOpen = !!(res && res.browserOpen) || guardModal.via === "browser";
+  const rows = res && Array.isArray(res.sessions) ? res.sessions : [];
+  if (!res || !res.ok) {
+    guardModal.error = (res && res.error) || "读取设备失败";
+    guardModal.waf = !!(res && res.sessionWaf) || isWafError(guardModal.error);
+  } else {
+    guardModal.waf = false;
+  }
+  guardModal.sessions = rows;
+  applySessionBlock(id, res);
+  if (!guardModal.running) {
+    const present = new Set(rows.map((s) => s.sessionId));
+    if (!guardModal.prechecked && rows.length) {
+      // 预勾选：优先回填上次的保留名单；否则本机账号默认保留全部客户端会话；其余不勾，让用户自己选。
+      const g = guardStatus[id] || {};
+      const saved = (g.keepIds || []).filter((sid) => present.has(sid));
+      const picked = new Set(saved);
+      if (!picked.size && localUserId && id === localUserId) {
+        for (const s of rows) if (s.type === "client") picked.add(s.sessionId);
+      }
+      guardModal.checked = picked;
+      guardModal.prechecked = true;
+    } else {
+      // 刷新：保留用户已勾的（仍在线的），新出现的设备默认不勾。
+      guardModal.checked = new Set([...guardModal.checked].filter((sid) => present.has(sid)));
+    }
+  }
+  renderGuardModal();
+  render();
+}
+
+function isGuardPanelOpen() {
+  const el = $("guardCard");
+  return !!(el && !el.hidden);
+}
+
+function startGuardPanelTimer() {
+  stopGuardPanelTimer();
+  guardModal.timer = setInterval(() => {
+    if (!isGuardPanelOpen()) return stopGuardPanelTimer();
+    if (guardModal.running) refreshGuardStatus(false);
+  }, 1000);
+}
+
+function stopGuardPanelTimer() {
+  if (guardModal.timer) clearInterval(guardModal.timer);
+  guardModal.timer = null;
+}
+
+function firstRunningGuardId() {
+  const running = Object.entries(guardStatus || {}).filter(([, g]) => g && g.running);
+  if (!running.length) return "";
+  if (guardModal.id && running.some(([k]) => k === guardModal.id)) return guardModal.id;
+  return running[0][0];
+}
+
+function openGuardFromGlobal() {
+  const id = firstRunningGuardId() || guardModal.id;
+  if (id) openGuard(id);
+}
+
+async function openGuard(id) {
+  const a = accounts.find((x) => x.id === id);
+  if (!a) return;
+  setTab("accounts");
+  const same = guardModal.id === id && isGuardPanelOpen();
+  if (!same) {
+    guardModal.id = id;
+    guardModal.email = accountMail(a, id);
+    guardModal.tokenType = a.tokenType || null;
+    guardModal.sessions = [];
+    guardModal.checked = new Set();
+    guardModal.prechecked = false;
+    guardModal.warnEmpty = false;
+    guardModal.error = "";
+    guardModal.waf = false;
+    guardModal.via = "";
+    guardModal.browserOpen = false;
+  }
+  const card = $("guardCard");
+  card.hidden = false;
+  await refreshGuardStatus(false);
+  if (guardModal.id !== id) return;
+  const g = guardStatus[id];
+  guardModal.running = !!(g && g.running);
+  if (g && g.intervalMinutes != null) fillGuardIntervalMinutes(g.intervalMinutes);
+  else if (!same) fillGuardIntervalMinutes(GUARD_INTERVAL_MIN_DEFAULT);
+  renderGuardModal();
+  startGuardPanelTimer();
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  await loadGuardSessions();
+}
+
+function hideGuard() {
+  const card = $("guardCard");
+  if (card) card.hidden = true;
+  stopGuardPanelTimer();
+}
+
+function onGuardBodyClick(e) {
+  const btn = e.target.closest("button[data-sact]");
+  if (!btn) return;
+  if (btn.getAttribute("data-sact") === "browser") openSessionsPage(guardModal.id);
+}
+
+function onGuardBodyChange(e) {
+  const chk = e.target.closest("input.guardchk");
+  if (!chk) return;
+  const sid = chk.getAttribute("data-sid");
+  if (chk.checked) guardModal.checked.add(sid);
+  else guardModal.checked.delete(sid);
+  guardModal.warnEmpty = false;
+  renderGuardModal();
+}
+
+async function startGuard() {
+  const id = guardModal.id;
+  if (!id || guardModal.loading) return;
+  const present = new Set((guardModal.sessions || []).map((s) => s.sessionId));
+  const keep = [...guardModal.checked].filter((sid) => present.has(sid));
+  if (!keep.length) {
+    guardModal.warnEmpty = true;
+    renderGuardModal();
+    toast("至少勾选一台要保留的设备，否则会把所有设备（含本机）全部踢下线");
+    return;
+  }
+  const others = present.size - keep.length;
+  const minutes = readGuardIntervalMinutes();
+  fillGuardIntervalMinutes(minutes);
+  $("guardStart").disabled = true;
+  let res = null;
+  try {
+    res = await api().device_guard_start(id, keep, minutes);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  $("guardStart").disabled = false;
+  if (!res || !res.ok) {
+    toast("开启失败：" + ((res && res.error) || "未知原因"));
+    return;
+  }
+  toast(`已开启本机保护：保留 ${keep.length} 台，${guardIntervalLabel(minutes)}，并自动下线其他设备` + (others ? `（当前将踢 ${others} 台）` : ""));
+  if (guardModal.id === id) guardModal.running = true;
+  await refreshGuardStatus(true);
+}
+
+async function stopGuard(id) {
+  let res = null;
+  try {
+    res = await api().device_guard_stop(id);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  if (res && res.ok) {
+    const n = res.status && res.status.kickedCount;
+    toast("已停止本机保护" + (n ? `（本次共踢下线 ${n} 台）` : ""));
+  } else {
+    toast("停止失败：" + ((res && res.error) || "未知原因"));
+  }
+  if (guardModal.id === id && isGuardPanelOpen()) {
+    guardModal.running = false;
+    guardModal.prechecked = false;
+    await refreshGuardStatus(true);
+    await loadGuardSessions();
+  } else {
+    await refreshGuardStatus(true);
+  }
+}
+
+function toggleGuard(id) {
+  const g = guardStatus[id];
+  if (g && g.running) stopGuard(id);
+  else openGuard(id);
+}
+
+// ---- 行操作：桌面端在操作列直接排开；窄屏隐藏操作列，改为账号格里的「操作」按钮弹出菜单 ----
+
+function rowActions(a, st) {
+  const webTok = String(a.tokenType || "").toLowerCase() === "web";
+  const g = guardStatus[a.id];
+  const guarding = !!(g && g.running);
+  const dis = !!busy;
+  return [
+    { act: "claim", label: "领取", cls: "primary", title: "领取 Sand 资格", disabled: dis },
+    { act: "verify", label: "验证", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
+    { act: "switch", label: "切号", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
+    { act: "browser", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
+    { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending）" },
+    { act: "devices", label: "查看设备", title: "实时查看云端登录设备，可踢下线（成功后应立刻从列表消失）" },
+    {
+      act: "guard",
+      label: guarding ? "停止保护" : "本机保护",
+      cls: guarding ? "danger guarding" : "guard",
+      title: guarding
+        ? `停止本机设备保护（运行中：已踢 ${(g && g.kickedCount) || 0} 台）`
+        : "开启前勾选要保留的设备并设置检测间隔，之后按间隔自动下线未保留设备",
+    },
+    { act: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
+    { act: "remove", label: "移除", cls: "danger", disabled: dis },
+  ];
+}
+
+function actionButtonsHtml(id, list) {
+  return list
+    .map(
+      (b) =>
+        `<button type="button" class="btn tiny${b.cls ? " " + b.cls : ""}" data-act="${b.act}" data-id="${esc(id)}"` +
+        `${b.disabled ? " disabled" : ""}${b.title ? ` title="${esc(b.title)}"` : ""}>${esc(b.label)}</button>`
+    )
+    .join("\n");
+}
+
+function openRowMenu(id) {
+  const a = accounts.find((x) => x.id === id);
+  if (!a) return;
+  $("menuTitle").textContent = accountMail(a, id);
+  $("menuSub").textContent = a.id;
+  $("menuBody").innerHTML = actionButtonsHtml(id, rowActions(a, rowState[id]));
+  $("menuMask").hidden = false;
+}
+
+function hideRowMenu() {
+  $("menuMask").hidden = true;
+}
+
+function onMenuClick(e) {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  hideRowMenu();
+  dispatchAction(btn.getAttribute("data-act"), btn.getAttribute("data-id"));
 }
 
 // 一个池子一行：标签 + 百分比 + 细条。三池互不相加。
@@ -404,26 +1143,26 @@ function render() {
         `</div>`;
       const dead = st && st.alive === false;
       const dis = busy ? " disabled" : "";
-      return `<tr data-id="${esc(a.id)}"${dead ? ' class="dead"' : ""}>
+      const guarding = !!(guardStatus[a.id] && guardStatus[a.id].running);
+      const rowCls = [dead ? "dead" : "", guarding ? "guarding" : ""].filter(Boolean).join(" ");
+      return `<tr data-id="${esc(a.id)}"${rowCls ? ` class="${rowCls}"` : ""}>
         <td class="col-chk"><input type="checkbox" class="rowchk" data-id="${esc(a.id)}"${checked}${dis} /></td>
-        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}</td>
+        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}
+          <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></td>
         <td>${planCell(st)}</td>
         <td>${expiryCell(a, st)}</td>
         <td>${statusCell(st)}</td>
         <td>${quotaCell(st)}</td>
         <td class="col-act"><div class="act-wrap">
-          <button class="btn tiny primary" data-act="claim" data-id="${esc(a.id)}"${dis} title="领取 Sand 资格">领取</button>
-          <button class="btn tiny" data-act="verify" data-id="${esc(a.id)}"${dis} title="验证有效性并刷新用量 / 订阅">验证</button>
-          <button class="btn tiny" data-act="switch" data-id="${esc(a.id)}"${dis} title="${webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor"}">切号</button>
-          <button class="btn tiny" data-act="browser" data-id="${esc(a.id)}"${dis}>网页领取</button>
-          <button class="btn tiny" data-act="copy" data-id="${esc(a.id)}"${dis} title="复制：邮箱----user_id::token">复制</button>
-          <button class="btn tiny danger" data-act="remove" data-id="${esc(a.id)}"${dis}>移除</button>
+          ${actionButtonsHtml(a.id, rowActions(a, st))}
         </div></td>
       </tr>`;
     })
     .join("");
   $("emptyHint").hidden = accounts.length > 0;
   $("countPill").textContent = accounts.length + " 个";
+  const tabCount = $("tabAccountCount");
+  if (tabCount) tabCount.textContent = String(accounts.length);
   syncSelectAll();
   updateStats();
 }
@@ -547,6 +1286,7 @@ function applyStatus(id, res) {
     sessionClientCount: res.sessionClientCount,
     sessionWebCount: res.sessionWebCount,
     sessionError: res.sessionError || "",
+    sessionWaf: !!res.sessionWaf,
   };
   schedulePersist();
 }
@@ -1102,10 +1842,31 @@ async function exportAllClassified() {
 function onTableClick(e) {
   const btn = e.target.closest("button[data-act]");
   if (!btn) return;
-  const id = btn.getAttribute("data-id");
-  const act = btn.getAttribute("data-act");
-  if (act === "sessions") {
+  dispatchAction(btn.getAttribute("data-act"), btn.getAttribute("data-id"));
+}
+
+// 表格操作列 / 账号格标签 / 窄屏「操作」菜单 共用一个分发口。
+function dispatchAction(act, id) {
+  if (!id) return;
+  // 查看设备 / 进控制台 / 本机保护 与批量领取、验证互不影响，忙碌时也可用。
+  if (act === "sessions" || act === "devices") {
     openSessions(id);
+    return;
+  }
+  if (act === "guardinfo") {
+    openGuard(id);
+    return;
+  }
+  if (act === "guard") {
+    toggleGuard(id);
+    return;
+  }
+  if (act === "dashboard") {
+    openDashboard(id);
+    return;
+  }
+  if (act === "menu") {
+    openRowMenu(id);
     return;
   }
   if (busy) return;
@@ -1263,7 +2024,7 @@ async function refreshPatch() {
     $("patchRules").hidden = true;
     return;
   }
-  const versionMismatch = !res.streamMode && !res.streamCapable;
+  const versionMismatch = res.testedVersion === false && !res.streamMode && !res.installed;
   const s = res.summary || {};
   if (res.streamMode && s.verdict !== "partial") {
     pill.className = "pill ok";
@@ -1284,7 +2045,7 @@ async function refreshPatch() {
     const dl = res.downloadUrl || "";
     const dlSys = res.downloadUrlSystem || "";
     info.innerHTML =
-      `⚠ 需 Cursor ${req} 才能打补丁：当前 ${res.version || "?"} 不含 agent-host 锚点，打了也不生效。先装对应版本并关自动更新。 ` +
+      `⚠ 已测试版本为 ${req}：当前 ${res.version || "?"} 不在列表内，插件仍会尝试，但锚点不全会拒绝写入。 ` +
       (dl ? `<button class="btn tiny primary" id="btnDlCursor">下载 Cursor ${req}</button> ` : "") +
       (dlSys ? `<button class="btn tiny" id="btnDlCursorSys">管理员版</button>` : "");
     const b1 = document.getElementById("btnDlCursor");
@@ -1330,14 +2091,13 @@ async function doPatch() {
   // 版本不对就先拦一下：3.18.9 之外没有 agent-host 锚点，打了也白打。
   try {
     const st = await api().patch_status();
-    if (st && st.ok && st.streamCapable === false) {
-      const req = st.requiredVersion || "3.18.9";
+    if (st && st.ok && st.testedVersion === false && !st.streamMode) {
+      const req = st.requiredVersion || "3.18.9 / 3.18.25 / 3.19.13";
       const dl = st.downloadUrl || "";
       const msg =
-        `当前 Cursor ${st.version || ""} 没有 ${req} 的 agent-host 锚点：\n` +
-        `打补丁不会生效，Sand 工具依然用不了。\n\n` +
-        `请先安装 Cursor ${req}（并关闭自动更新）：\n${dl}\n\n` +
-        `（取消后可点补丁面板的「下载 Cursor ${req}」按钮直接下载）\n\n仍要继续尝试吗？`;
+        `当前 Cursor ${st.version || ""} 不在已测试列表（${req}）：\n` +
+        `插件仍会尝试打补丁，但锚点不全时会拒绝写入。\n\n` +
+        `建议先安装已测试版本（并关闭自动更新）：\n${dl}\n\n仍要继续尝试吗？`;
       if (window.confirm(msg) === false) {
         toast("已取消：请先安装 Cursor " + req + " 再打补丁");
         return;
@@ -1389,6 +2149,23 @@ function hideHelp() {
   if ($("helpHide").checked) saveSettings({ hideHelp: true });
 }
 
+function setTab(name) {
+  const accounts = name === "accounts";
+  const bar = $("tabBar") || document.querySelector(".tabs");
+  if (bar) bar.dataset.active = name;
+  $("tabAccounts").classList.toggle("active", accounts);
+  $("tabPatch").classList.toggle("active", !accounts);
+  $("tabAccounts").setAttribute("aria-selected", accounts ? "true" : "false");
+  $("tabPatch").setAttribute("aria-selected", accounts ? "false" : "true");
+  $("panelAccounts").hidden = !accounts;
+  $("panelPatch").hidden = accounts;
+}
+
+function onTabClick(e) {
+  const btn = e.target.closest("[data-tab]");
+  if (btn) setTab(btn.getAttribute("data-tab"));
+}
+
 async function doSetPath() {
   const path = $("cursorPathInput").value.trim();
   toast("正在设置 Cursor 路径…");
@@ -1402,6 +2179,8 @@ async function doSetPath() {
 }
 
 async function boot() {
+  document.querySelector(".tabs").addEventListener("click", onTabClick);
+  $("btnHelp").addEventListener("click", showHelp);
   $("btnDetectLocal").addEventListener("click", detectLocal);
   $("btnImportFile").addEventListener("click", importFiles);
   $("btnAddText").addEventListener("click", addText);
@@ -1423,6 +2202,26 @@ async function boot() {
   $("chkAll").addEventListener("change", onSelectAll);
   $("helpOk").addEventListener("click", hideHelp);
   $("sessionOk").addEventListener("click", hideSessions);
+  $("sessionRefresh").addEventListener("click", () => loadSessions());
+  $("sessionBrowser").addEventListener("click", () => openSessionsPage(sessionModal.id));
+  $("sessionBody").addEventListener("click", onSessionBodyClick);
+  $("guardCancel").addEventListener("click", hideGuard);
+  $("guardRefresh").addEventListener("click", () => loadGuardSessions());
+  $("guardBrowser").addEventListener("click", () => openSessionsPage(guardModal.id));
+  $("guardBody").addEventListener("click", onGuardBodyClick);
+  $("guardStart").addEventListener("click", startGuard);
+  $("guardStop").addEventListener("click", () => guardModal.id && stopGuard(guardModal.id));
+  $("guardInterval").addEventListener("change", () => fillGuardIntervalMinutes(readGuardIntervalMinutes()));
+  $("guardBody").addEventListener("change", onGuardBodyChange);
+  $("guardGlobal").addEventListener("click", openGuardFromGlobal);
+  $("guardGlobal").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openGuardFromGlobal();
+    }
+  });
+  $("menuClose").addEventListener("click", hideRowMenu);
+  $("menuBody").addEventListener("click", onMenuClick);
   $("autoVerifyChk").addEventListener("change", (e) => saveSettings({ autoVerify: !!e.target.checked }));
   refreshPatch();
 
@@ -1444,6 +2243,10 @@ async function boot() {
     await refreshLocalIdentity();
     render();
   }
+
+  // 本机设备保护跑在 Python 守护线程里；这里只是定时把状态拉过来画标签（本地调用，不联网）。
+  await refreshGuardStatus(true);
+  setInterval(() => refreshGuardStatus(false), 2000);
 
   try {
     settings = (await api().get_settings()) || {};
