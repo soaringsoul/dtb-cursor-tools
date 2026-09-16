@@ -1,8 +1,10 @@
 """用账号 token 打开一个已登录的浏览器（Chrome/Edge），落到 Sand 领取页或 Cursor 控制台，供手动操作。
 
 原理：WorkosCursorSessionToken 是 HttpOnly cookie，命令行/URL 都带不进普通浏览器；
-只能用 CDP（DevTools 协议）：启动带调试端口 + 独立 profile 的浏览器 → Network.setCookie
-注入会话 cookie → Page.navigate 到目标页 → 浏览器留给用户手动操作。
+只能用 CDP（DevTools 协议）：启动带调试端口 + 独立 profile 的浏览器 →
+Storage.setCookies / Network.setCookie（必须带 https url + sourceScheme=Secure，
+否则新版 Chrome 不会在访问 dashboard 时带上这颗 Secure cookie）→ Page.navigate
+到目标页 → 浏览器留给用户手动操作。若仍被 302 到 authenticator.cursor.sh，会再注入并重跳。
 
 每个账号只开一扇隔离窗口。窗口还在时，「进控制台 / 过校验」复用它，不再新开；
 设备列表 / 踢下线 / 本机保护也走这扇窗口的页面 fetch，不会每轮检测再拉起浏览器。
@@ -32,6 +34,9 @@ CURSOR_DASHBOARD = "https://cursor.com/dashboard"
 CURSOR_DASHBOARD_SPENDING = "https://cursor.com/dashboard/spending"
 # 官方 Active Sessions：dashboard → My Settings。人机校验拦截接口时打开这里给用户手动拖动 / 踢设备。
 CURSOR_DASHBOARD_SESSIONS = "https://cursor.com/dashboard/settings#active-sessions"
+AUTHENTICATOR_HOST = "authenticator.cursor.sh"
+SESSION_COOKIE_NAME = "WorkosCursorSessionToken"
+SESSION_COOKIE_TTL_SEC = 30 * 24 * 60 * 60
 
 
 def _free_port() -> int:
@@ -342,8 +347,23 @@ def _is_blank_url(url: str | None) -> bool:
     return base in ("about:blank", "chrome://newtab", "chrome://new-tab-page")
 
 
+def _is_authenticator_url(url: str | None) -> bool:
+    return f"://{AUTHENTICATOR_HOST}" in str(url or "").lower()
+
+
+def _is_dashboard_url(url: str | None) -> bool:
+    raw = str(url or "").split("#", 1)[0]
+    if _is_authenticator_url(raw):
+        return False
+    return raw.startswith("https://cursor.com/") or raw == "https://cursor.com"
+
+
 def _cursor_pages(pages: list) -> list:
     return [t for t in pages if str(t.get("url") or "").startswith("https://cursor.com")]
+
+
+def _authenticator_pages(pages: list) -> list:
+    return [t for t in pages if _is_authenticator_url(t.get("url"))]
 
 
 def _blank_pages(pages: list) -> list:
@@ -356,12 +376,16 @@ def _open_plan(pages: list) -> tuple:
     崩溃恢复会把数据工作台等旧标签加回来，命令行再塞一个 about:blank 并聚焦它。
     不能拿 /json 里第一项乱跳，否则控制台开在后台、眼前只剩空白页。
     Chrome 152 的 /json 还可能是空的，这时只能新建标签。
+    若上次停在 authenticator.cursor.sh，必须复用那一页再跳回 dashboard，不能放着登录页不管。
     """
     if not pages:
         return "create", None
     cursor = _cursor_pages(pages)
     if cursor:
         return "navigate", cursor[0]
+    auth = _authenticator_pages(pages)
+    if auth:
+        return "navigate", auth[0]
     blanks = _blank_pages(pages)
     if blanks:
         return "navigate", blanks[-1]
@@ -395,15 +419,32 @@ def _connect_page(ws_url: str) -> _CDP:
 
 
 def _cookie_param(user_id: str, jwt: str) -> dict:
+    """一颗可被 HTTPS cursor.com 发出去的会话 cookie。
+
+    只写 domain、从 about:blank 注入时，新版 Chrome 会把 Secure cookie 的
+    sourceScheme 留成 Unset，请求 dashboard 时不带这颗 cookie，于是被 302 到
+    authenticator.cursor.sh。必须带 url + sourceScheme=Secure。
+    """
     return {
-        "name": "WorkosCursorSessionToken",
+        "name": SESSION_COOKIE_NAME,
         "value": f"{user_id}%3A%3A{jwt}",
+        "url": "https://cursor.com/",
         "domain": ".cursor.com",
         "path": "/",
         "secure": True,
         "httpOnly": True,
         "sameSite": "Lax",
+        "expires": int(time.time()) + SESSION_COOKIE_TTL_SEC,
+        "sourceScheme": "Secure",
+        "sourcePort": 443,
     }
+
+
+def _cookie_params(user_id: str, jwt: str) -> list:
+    primary = _cookie_param(user_id, jwt)
+    www = dict(primary)
+    www["url"] = "https://www.cursor.com/"
+    return [primary, www]
 
 
 def _page_infos(cdp: _CDP) -> list:
@@ -422,25 +463,35 @@ def _page_infos(cdp: _CDP) -> list:
 
 def _inject_cookie(cdp: _CDP, user_id: str, jwt: str, session_id: str | None = None) -> None:
     _cdp_result(cdp.call("Network.enable", session_id=session_id), "启用网络")
-    res = _cdp_result(
-        cdp.call("Network.setCookie", _cookie_param(user_id, jwt), session_id=session_id),
-        "注入 cookie",
-    )
-    if res.get("success") is False:
+    ok = False
+    for cookie in _cookie_params(user_id, jwt):
+        res = _cdp_result(
+            cdp.call("Network.setCookie", cookie, session_id=session_id),
+            "注入 cookie",
+        )
+        if res.get("success") is False:
+            continue
+        ok = True
+    if not ok:
         raise RuntimeError("注入 cookie 失败")
 
 
 def _set_cookies(cdp: _CDP, user_id: str, jwt: str) -> None:
+    cookies = _cookie_params(user_id, jwt)
+    stored = False
     try:
-        _cdp_result(cdp.call("Storage.setCookies", {"cookies": [_cookie_param(user_id, jwt)]}), "注入 cookie")
-        return
+        _cdp_result(cdp.call("Storage.setCookies", {"cookies": cookies}), "注入 cookie")
+        stored = True
     except Exception:
-        pass
+        stored = False
     pages = _page_infos(cdp)
     if not pages:
+        if not stored:
+            raise RuntimeError("注入 cookie 失败：没有可写入的页面")
         return
+    target = _cursor_pages(pages) or _blank_pages(pages) or _authenticator_pages(pages) or pages
     attached = _cdp_result(
-        cdp.call("Target.attachToTarget", {"targetId": pages[0]["id"], "flatten": True}),
+        cdp.call("Target.attachToTarget", {"targetId": target[0]["id"], "flatten": True}),
         "连接标签",
     )
     _inject_cookie(cdp, user_id, jwt, attached.get("sessionId"))
@@ -546,35 +597,47 @@ def _eval_value(msg: dict):
 def _prepare_page(port: int, user_id: str, jwt: str, url: str | None = None, bring_to_front: bool = False) -> None:
     cdp = _connect_page(_browser_ws(port))
     try:
-        _set_cookies(cdp, user_id, jwt)
-        pages = _page_infos(cdp)
-        action, page = _open_plan(pages)
-        if action == "navigate" and page:
-            _navigate_attached(cdp, page["id"], user_id, jwt, url)
-        elif url:
-            _create_tab(cdp, url)
-        elif pages and bring_to_front:
-            _activate(cdp, pages[0]["id"])
-        else:
-            raise _BrowserGone("隔离浏览器没有可连接的页面")
-        if url:
+        opened = None
+        for attempt in range(3):
+            _set_cookies(cdp, user_id, jwt)
+            pages = _page_infos(cdp)
+            action, page = _open_plan(pages)
+            if action == "navigate" and page:
+                _navigate_attached(cdp, page["id"], user_id, jwt, url)
+            elif url:
+                _create_tab(cdp, url)
+            elif pages and bring_to_front:
+                _activate(cdp, pages[0]["id"])
+                break
+            else:
+                raise _BrowserGone("隔离浏览器没有可连接的页面")
+            if not url:
+                break
+            deadline = time.time() + 5.0
             opened = None
-            deadline = time.time() + 8.0
             while time.time() < deadline:
                 for item in _page_infos(cdp):
-                    if str(item.get("url") or "").startswith("https://cursor.com"):
+                    if _is_dashboard_url(item.get("url")):
                         opened = item
                         break
                 if opened:
                     break
                 time.sleep(0.25)
-            if not opened:
+            if opened:
+                break
+            if attempt == 2 and url:
                 _create_tab(cdp, url)
+        if url:
             _close_extra_blank_tabs(cdp)
     finally:
         cdp.close()
-    if url and not _wait_url_prefix(port, "https://cursor.com", timeout=3.0):
-        raise RuntimeError("浏览器已打开，但没有跳到 Cursor 页面")
+    if url:
+        landed = _wait_url_prefix(port, "https://cursor.com", timeout=3.0)
+        if not landed or not _is_dashboard_url(landed.get("url")):
+            raise RuntimeError(
+                "浏览器已打开，但 Cursor 仍停在登录页。"
+                "请确认该账号 token 仍有效，完全退出这扇隔离 Chrome 后再点一次「进控制台」。"
+            )
 
 
 def _browser_fetch(port: int, user_id: str, jwt: str, method: str, url: str, body: str | None = None) -> tuple:

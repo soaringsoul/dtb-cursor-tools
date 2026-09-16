@@ -288,6 +288,49 @@ class BrowserReuseTest(unittest.TestCase):
         self.assertEqual(block["sessionVia"], "browser")
         self.assertNotIn("HTTP 403", block["sessionError"])
 
+    def test_cookie_param_binds_https_source_so_chrome_will_send_it(self):
+        uid = "user_01COOKIE0000000000000000"
+        jwt = _jwt()
+        cookies = browser_login._cookie_params(uid, jwt)
+        self.assertGreaterEqual(len(cookies), 1)
+        cookie = cookies[0]
+        self.assertEqual(cookie["name"], "WorkosCursorSessionToken")
+        self.assertEqual(cookie["value"], f"{uid}%3A%3A{jwt}")
+        self.assertEqual(cookie["domain"], ".cursor.com")
+        self.assertTrue(str(cookie["url"]).startswith("https://cursor.com"))
+        self.assertEqual(cookie["sourceScheme"], "Secure")
+        self.assertEqual(cookie["sourcePort"], 443)
+        self.assertTrue(cookie["secure"])
+        self.assertTrue(cookie["httpOnly"])
+        self.assertEqual(cookie["sameSite"], "Lax")
+        self.assertGreater(cookie["expires"], 0)
+
+    def test_open_plan_reuses_authenticator_tab_instead_of_leaving_login(self):
+        pages = [
+            {"url": "https://authenticator.cursor.sh/?client_id=abc", "webSocketDebuggerUrl": "ws://a"},
+        ]
+        action, page = browser_login._open_plan(pages)
+        self.assertEqual(action, "navigate")
+        self.assertIn("authenticator.cursor.sh", page["url"])
+
+    def test_open_plan_prefers_cursor_com_over_authenticator(self):
+        pages = [
+            {"url": "https://authenticator.cursor.sh/?client_id=abc", "webSocketDebuggerUrl": "ws://a"},
+            {"url": "https://cursor.com/dashboard/spending", "webSocketDebuggerUrl": "ws://b"},
+        ]
+        action, page = browser_login._open_plan(pages)
+        self.assertEqual(action, "navigate")
+        self.assertEqual(page["url"], "https://cursor.com/dashboard/spending")
+
+    def test_dashboard_url_rejects_authenticator_login_page(self):
+        self.assertTrue(browser_login._is_dashboard_url("https://cursor.com/dashboard/spending"))
+        self.assertFalse(
+            browser_login._is_dashboard_url(
+                "https://authenticator.cursor.sh/?client_id=01GS6W3C96KW4WRS6Z93JCE2RJ&redirect_uri=https://cursor.com"
+            )
+        )
+        self.assertFalse(browser_login._is_dashboard_url("about:blank"))
+
 
 if __name__ == "__main__":
     unittest.main()

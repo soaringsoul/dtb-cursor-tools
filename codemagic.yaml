@@ -2,12 +2,12 @@
 # 用法：Codemagic 连接本 Gitee 仓库后，选 macos-build 工作流构建；产物在 Artifacts 里下载。
 workflows:
   macos-build:
-    name: SandClaimer macOS (.app + .dmg)
+    name: cursor账号管理器 macOS (.app + .dmg)
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       vars:
-        APP_NAME: "Sand Claimer"
+        APP_NAME: "cursor账号管理器"
     scripts:
       - name: 安装 Python 依赖（含 mac 的 pyobjc）
         script: |
@@ -39,11 +39,11 @@ workflows:
           python3 -m nuitka --standalone --assume-yes-for-downloads \
             --static-libpython=no \
             --macos-create-app-bundle \
-            --macos-app-name="Sand Claimer" \
+            --macos-app-name="cursor账号管理器" \
             $ICON_ARG \
             --enable-plugin=pywebview \
             --include-data-dir=web=web \
-            --company-name="SandClaimer" --product-name="Sand Claimer" \
+            --company-name="夜雨微寒" --product-name="cursor账号管理器" \
             --product-version=1.0.0 \
             --output-dir=build-mac \
             app.py

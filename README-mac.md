@@ -1,4 +1,4 @@
-# Sand 资格领取器 · macOS 使用说明
+# cursor账号管理器 · macOS 使用说明
 
 Windows 用户：双击 `启动.bat` 即可，无需看本文件。
 
@@ -16,9 +16,9 @@ python3 -m pip install -r requirements-mac.txt
 python3 app.py
 ```
 
-## 打补丁 / 切号需要的权限
+## 切号需要的权限
 
-- 「切号」「打补丁」要写入 Cursor 安装目录与登录库。首次可能弹出权限请求，允许即可。
+- 「切号」要写入 Cursor 登录库。首次可能弹出权限请求，允许即可。
 - 若失败，用终端 `sudo python3 app.py` 再试。
 
 ## 一键打包成 .app / .dmg（在 Mac 上做）

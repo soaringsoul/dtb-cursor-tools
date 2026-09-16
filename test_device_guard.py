@@ -373,15 +373,16 @@ class CleanIdsTest(unittest.TestCase):
         self.assertEqual(device_guard.clean_ids(None), [])
 
 
-class IntervalMinutesTest(unittest.TestCase):
-    def test_clean_interval_minutes_clamps(self):
-        self.assertEqual(device_guard.clean_interval_minutes(1), 1)
-        self.assertEqual(device_guard.clean_interval_minutes("5"), 5)
-        self.assertEqual(device_guard.clean_interval_minutes(0), 1)
-        self.assertEqual(device_guard.clean_interval_minutes(-3), 1)
-        self.assertEqual(device_guard.clean_interval_minutes(999), device_guard.MAX_INTERVAL_MINUTES)
-        self.assertEqual(device_guard.clean_interval_minutes(None), device_guard.DEFAULT_INTERVAL_MINUTES)
-        self.assertEqual(device_guard.clean_interval_minutes("nope"), device_guard.DEFAULT_INTERVAL_MINUTES)
+class IntervalSecondsTest(unittest.TestCase):
+    def test_clean_interval_seconds_clamps(self):
+        self.assertEqual(device_guard.clean_interval_seconds(30), 30)
+        self.assertEqual(device_guard.clean_interval_seconds("45"), 45)
+        self.assertEqual(device_guard.clean_interval_seconds(0), device_guard.MIN_INTERVAL_SECONDS)
+        self.assertEqual(device_guard.clean_interval_seconds(-3), device_guard.MIN_INTERVAL_SECONDS)
+        self.assertEqual(device_guard.clean_interval_seconds(99999), device_guard.MAX_INTERVAL_SECONDS)
+        self.assertEqual(device_guard.clean_interval_seconds(None), device_guard.DEFAULT_INTERVAL_SECONDS)
+        self.assertEqual(device_guard.clean_interval_seconds("nope"), device_guard.DEFAULT_INTERVAL_SECONDS)
+        self.assertEqual(device_guard.DEFAULT_INTERVAL_SECONDS, 30)
 
     def test_start_without_interval_keeps_manager_tick(self):
         tmp = tempfile.TemporaryDirectory()
@@ -397,10 +398,10 @@ class IntervalMinutesTest(unittest.TestCase):
         mgr.start(UID, UID, JWT, [KEEP])
         guard = mgr._guards[UID]
         self.assertEqual(guard.tick_seconds, 0.02)
-        self.assertIsNone(guard.interval_minutes)
-        self.assertIsNone(mgr.status()[UID].get("intervalMinutes"))
+        self.assertIsNone(guard.interval_seconds)
+        self.assertIsNone(mgr.status()[UID].get("intervalSeconds"))
 
-    def test_start_interval_minutes_sets_per_guard_wait_and_persists(self):
+    def test_start_interval_seconds_sets_per_guard_wait_and_persists(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         state = os.path.join(tmp.name, "g.json")
@@ -412,19 +413,19 @@ class IntervalMinutesTest(unittest.TestCase):
             tick_seconds=0.02,
         )
         self.addCleanup(lambda: mgr.stop_all(wait=True, timeout=3.0))
-        res = mgr.start(UID, UID, JWT, [KEEP], interval_minutes=3)
+        res = mgr.start(UID, UID, JWT, [KEEP], interval_seconds=45)
         self.assertTrue(res["ok"], res)
         guard = mgr._guards[UID]
-        self.assertEqual(guard.interval_minutes, 3)
-        self.assertEqual(guard.tick_seconds, 3 * device_guard.SECONDS_PER_MINUTE)
-        self.assertEqual(mgr.status()[UID]["intervalMinutes"], 3)
+        self.assertEqual(guard.interval_seconds, 45)
+        self.assertEqual(guard.tick_seconds, 45)
+        self.assertEqual(mgr.status()[UID]["intervalSeconds"], 45)
         with open(state, encoding="utf-8") as handle:
             saved = json.load(handle)
-        self.assertEqual(saved[UID]["intervalMinutes"], 3)
+        self.assertEqual(saved[UID]["intervalSeconds"], 45)
         mgr.stop(UID, wait=True)
         st = mgr.status()[UID]
         self.assertFalse(st["running"])
-        self.assertEqual(st["intervalMinutes"], 3)
+        self.assertEqual(st["intervalSeconds"], 45)
         mgr2 = device_guard.DeviceGuardManager(
             state_path=state,
             fetch_sessions=cloud.fetch,
@@ -432,7 +433,22 @@ class IntervalMinutesTest(unittest.TestCase):
             tick_seconds=0.02,
         )
         self.addCleanup(lambda: mgr2.stop_all(wait=True, timeout=3.0))
-        self.assertEqual(mgr2.status()[UID]["intervalMinutes"], 3)
+        self.assertEqual(mgr2.status()[UID]["intervalSeconds"], 45)
+
+    def test_legacy_interval_minutes_file_becomes_seconds(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = os.path.join(tmp.name, "g.json")
+        with open(state, "w", encoding="utf-8") as handle:
+            json.dump({UID: {"keepIds": [KEEP], "intervalMinutes": 1}}, handle)
+        mgr = device_guard.DeviceGuardManager(
+            state_path=state,
+            fetch_sessions=_Cloud([KEEP]).fetch,
+            revoke_session=_Cloud([KEEP]).revoke,
+            tick_seconds=0.02,
+        )
+        self.addCleanup(lambda: mgr.stop_all(wait=True, timeout=3.0))
+        self.assertEqual(mgr.status()[UID]["intervalSeconds"], 60)
 
 
 if __name__ == "__main__":

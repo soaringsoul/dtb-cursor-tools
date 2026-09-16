@@ -9,17 +9,21 @@
 //
 // 行内三个账号运维动作（与批量互不影响，忙碌时也可用）：
 //   进控制台  → 隔离浏览器注入登录态，落到 cursor.com/dashboard/spending
-//   查看设备  → 实时拉云端登录会话，可踢下线（最多约 10 分钟生效）
-//   本机保护  → 勾选保留设备并设置间隔后，Python 守护线程按分钟间隔检测并自动下线未保留设备
+//   查看设备  → 实时拉云端登录会话，可单台或勾选后批量踢下线（最多约 10 分钟生效）
+//   本机保护  → 勾选保留设备，可立即删除未勾选；可同时保护多个账号；启动后按间隔自动下线未保留设备
 
 let accounts = [];
 const rowState = {}; // id -> 行状态：kind + 有效性 + Bot/Auto/高级 三池 + 订阅
 const selected = new Set(); // 勾选的账号 id；为空表示「验证 / 领取」对全部生效
 let busy = false;
-let settings = {}; // settings.json：hideHelp / autoVerify
+let settings = {}; // settings.json：hideHelp / autoVerify / mainTab / loginDetectSec
 let lastPersisted = {}; // 上次落盘的稳定状态，避免瞬时失败把已保存的数据冲掉
 let localUserId = null; // 本机 Cursor 当前登录的 user_ id；未登录为 null
 let guardStatus = {}; // id -> device_guard_status() 的一项；running=true 表示该号的保护线程在跑
+let tokenViews = {}; // id -> {worksessionToken, refreshToken}
+const tokenOpenIds = new Set(); // 单行展开；工具栏「显示 Token」打开时全部展开
+let apiKeys = []; // {id, apiKeyName, userEmail, userId, addedAt}，不含完整密钥
+const agentLists = {}; // keyId -> {loading, error, agents}
 
 const $ = (id) => document.getElementById(id);
 
@@ -265,6 +269,39 @@ function sessionTimeLabel(iso) {
   return text || "—";
 }
 
+// 与 login_detect.py 保持一致：设备创建时间距检测时刻落在窗口内 → 刚登录。
+const LOGIN_DETECT_DEFAULT_SEC = 120;
+const LOGIN_DETECT_MIN_SEC = 5;
+const LOGIN_DETECT_MAX_SEC = 3600;
+const LOGIN_DETECT_FUTURE_SKEW_MS = 5000;
+
+function clampLoginDetectSec(raw) {
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return LOGIN_DETECT_DEFAULT_SEC;
+  return Math.max(LOGIN_DETECT_MIN_SEC, Math.min(LOGIN_DETECT_MAX_SEC, n));
+}
+
+function isRecentLogin(createdAt, nowMs, windowSec) {
+  const created = toMs(createdAt);
+  const now = Number(nowMs);
+  if (isNaN(created) || !Number.isFinite(now)) return false;
+  const windowMs = clampLoginDetectSec(windowSec) * 1000;
+  const delta = now - created;
+  if (delta < -LOGIN_DETECT_FUTURE_SKEW_MS) return false;
+  if (delta < 0) return true;
+  return delta <= windowMs;
+}
+
+function recentLoginIds(rows, nowMs, windowSec) {
+  return (rows || [])
+    .filter((s) => s && s.sessionId && isRecentLogin(s.createdAt, nowMs, windowSec))
+    .map((s) => s.sessionId);
+}
+
+function recentLoginCount(rows, nowMs, windowSec) {
+  return recentLoginIds(rows, nowMs, windowSec).length;
+}
+
 function sessionTypePill(t) {
   const cls = t === "client" ? "info" : t === "web" ? "amount" : "idle";
   return `<span class="pill mini ${cls}">${esc(sessionTypeLabel(t))}</span>`;
@@ -299,7 +336,7 @@ function guardPill(a) {
   if (!g || !g.running) return "";
   const kicked = g.kickedCount || 0;
   const tip =
-    `本机设备保护运行中：${guardIntervalLabel(g.intervalMinutes)}，自动下线未保留设备。保留 ${(g.keepIds || []).length} 台，已踢 ${kicked} 台` +
+    `本机设备保护运行中：${guardIntervalLabel(g.intervalSeconds)}，自动下线未保留设备。保留 ${(g.keepIds || []).length} 台，已踢 ${kicked} 台` +
     (g.lastTickAt ? `，最近检测 ${fmtTs(toMs(g.lastTickAt))}` : "") +
     (g.lastError ? `。⚠ ${g.lastError}` : "") +
     "。点击查看详情";
@@ -353,7 +390,22 @@ function applySessionBlock(id, res) {
 
 // ---- 查看设备：实时拉取 + 踢下线 ----
 
-const sessionModal = { id: null, loading: false, error: "", waf: false, sessions: [], email: "", tokenType: null, confirmSid: "", busySid: "", via: "", browserOpen: false };
+const sessionModal = {
+  id: null,
+  loading: false,
+  error: "",
+  waf: false,
+  sessions: [],
+  email: "",
+  tokenType: null,
+  confirmSid: "",
+  busySid: "",
+  via: "",
+  browserOpen: false,
+  checked: new Set(),
+  confirmBatch: false,
+  busyBatch: false,
+};
 
 function isWafError(err, wafFlag) {
   if (wafFlag) return true;
@@ -390,6 +442,13 @@ function sessionRowHtml(s, opts) {
         : `<span class="pill mini bad" title="不在保留名单里，检测到就会被踢下线">待踢</span>`
     );
   }
+  if (opts && opts.recentAt && isRecentLogin(s.createdAt, opts.recentAt, opts.recentSec)) {
+    const ago = Math.round((opts.recentAt - toMs(s.createdAt)) / 1000);
+    const label = Number.isFinite(ago) && ago >= 0 ? `刚登录 · ${ago}秒前` : "刚登录";
+    tags.push(
+      `<span class="pill mini ok" title="设备创建时间与本机检测时刻相差 ${esc(String(ago))} 秒，落在设定的 ${esc(String(opts.recentSec))} 秒内">${esc(label)}</span>`
+    );
+  }
   return (
     `<div class="session-main">` +
     `<div class="session-head">${tags.join(" ")} <span class="sid mono" title="${esc(sid)}">${esc(short)}</span></div>` +
@@ -420,9 +479,23 @@ function renderSessionModal() {
   }
   if (rows.length) {
     const mineKind = tokenSessionKind(m.tokenType);
+    const selectedN = rows.filter((s) => m.checked.has(s.sessionId)).length;
+    const busy = !!(m.busySid || m.busyBatch);
+    html += `<div class="session-toolbar">`;
+    html += `<button type="button" class="btn tiny" data-sact="all"${busy ? " disabled" : ""}>全选</button>`;
+    html += `<button type="button" class="btn tiny" data-sact="none"${busy ? " disabled" : ""}>全不选</button>`;
+    html += `<span class="hint">已选 ${selectedN} 台</span>`;
+    html += `<button type="button" class="btn tiny danger" data-sact="kick-batch"${busy || !selectedN ? " disabled" : ""}>${m.busyBatch ? "踢下线中…" : "踢掉所选"}</button>`;
+    html += `</div>`;
+    if (m.confirmBatch && selectedN) {
+      html += `<div class="kick-confirm"><div class="hint">确定踢掉已勾选的 ${selectedN} 台设备？成功后应立刻从列表消失。官网最多约 10 分钟才真正下线。</div>` +
+        `<div class="kick-actions"><button type="button" class="btn tiny" data-sact="batch-cancel">取消</button>` +
+        `<button type="button" class="btn tiny danger" data-sact="batch-confirm">确认踢掉所选</button></div></div>`;
+    }
     html += `<ul class="session-list">`;
     for (const s of rows) {
       const sid = s.sessionId || "";
+      const on = m.checked.has(sid) ? " checked" : "";
       let right;
       if (m.confirmSid === sid) {
         const warn =
@@ -433,10 +506,13 @@ function renderSessionModal() {
           `<div class="kick-actions"><button type="button" class="btn tiny" data-sact="cancel">取消</button>` +
           `<button type="button" class="btn tiny danger" data-sact="confirm" data-sid="${esc(sid)}" data-stype="${esc(s.typeRaw || s.type || "")}">确认踢下线</button></div></div>`;
       } else {
-        const dis = m.busySid ? " disabled" : "";
+        const dis = busy ? " disabled" : "";
         right = `<button type="button" class="btn tiny danger" data-sact="kick" data-sid="${esc(sid)}"${dis}>${m.busySid === sid ? "踢下线中…" : "踢下线"}</button>`;
       }
-      html += `<li class="session-row${m.confirmSid === sid ? " confirming" : ""}">${sessionRowHtml(s, { mineKind, accountId: m.id, sessions: rows })}${right}</li>`;
+      html += `<li class="session-row selectable${on ? " picked" : ""}${m.confirmSid === sid ? " confirming" : ""}"><label class="session-pick">` +
+        `<input type="checkbox" class="sesschk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
+        sessionRowHtml(s, { mineKind, accountId: m.id, sessions: rows }) +
+        `</label>${right}</li>`;
     }
     html += `</ul>`;
   }
@@ -482,6 +558,8 @@ async function loadSessions() {
     sessionModal.sessions = Array.isArray(res.sessions) ? res.sessions : [];
   }
   applySessionBlock(id, res);
+  const present = new Set((sessionModal.sessions || []).map((s) => s.sessionId));
+  sessionModal.checked = new Set([...sessionModal.checked].filter((sid) => present.has(sid)));
   renderSessionModal();
   render();
 }
@@ -494,6 +572,9 @@ function openSessions(id) {
   sessionModal.tokenType = a && a.tokenType ? a.tokenType : null;
   sessionModal.confirmSid = "";
   sessionModal.busySid = "";
+  sessionModal.checked = new Set();
+  sessionModal.confirmBatch = false;
+  sessionModal.busyBatch = false;
   sessionModal.error = "";
   sessionModal.waf = !!(a && rowState[id] && rowState[id].sessionWaf);
   $("sessionMask").hidden = false;
@@ -503,6 +584,108 @@ function openSessions(id) {
 function hideSessions() {
   $("sessionMask").hidden = true;
   sessionModal.id = null;
+}
+
+function openLoginDetect() {
+  const input = $("loginDetectSec");
+  if (input) input.value = String(clampLoginDetectSec(settings.loginDetectSec || guardModal.recentSec));
+  $("loginDetectMask").hidden = false;
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function hideLoginDetect() {
+  const el = $("loginDetectMask");
+  if (el) el.hidden = true;
+}
+
+async function runLoginDetect() {
+  const sec = clampLoginDetectSec($("loginDetectSec") && $("loginDetectSec").value);
+  guardModal.recentSec = sec;
+  guardModal.recentAt = Date.now();
+  settings.loginDetectSec = sec;
+  saveSettings({ loginDetectSec: sec });
+  hideLoginDetect();
+  if (guardModal.id && isGuardPanelOpen()) await loadGuardSessions();
+  const next = new Set(recentLoginIds(guardModal.sessions, guardModal.recentAt, guardModal.recentSec));
+  if (guardModal.running) {
+    guardModal.kickChecked = next;
+    guardModal.confirmKick = false;
+  } else {
+    guardModal.checked = next;
+    guardModal.warnEmpty = false;
+    guardModal.confirmKick = false;
+  }
+  renderGuardModal();
+  const n = next.size;
+  toast(n ? `已标出 ${n} 台刚登录设备（${sec}秒内）` : `没有设备落在 ${sec} 秒内`);
+}
+
+function sessionRevokeItem(s) {
+  return { sessionId: s.sessionId || "", type: s.typeRaw || s.type || "" };
+}
+
+async function revokeSessions(id, sessions) {
+  const items = (sessions || []).map(sessionRevokeItem).filter((x) => x.sessionId);
+  if (!items.length) return { ok: false, error: "没有要踢下线的设备", kickedCount: 0, failedCount: 0, waf: false };
+  const bridge = api();
+  if (bridge && bridge.revoke_sessions) {
+    try {
+      return await bridge.revoke_sessions(id, items);
+    } catch (e) {
+      return { ok: false, error: String(e), kickedCount: 0, failedCount: items.length, waf: false };
+    }
+  }
+  if (!bridge || !bridge.revoke_session) {
+    return { ok: false, error: "接口不可用", kickedCount: 0, failedCount: items.length, waf: false };
+  }
+  const kicked = [];
+  const failed = [];
+  for (const item of items) {
+    let res = null;
+    try {
+      res = await bridge.revoke_session(id, item.sessionId, item.type || "");
+    } catch (e) {
+      res = { ok: false, error: String(e) };
+    }
+    const row = {
+      sessionId: item.sessionId,
+      ok: !!(res && res.ok),
+      error: (res && res.error) || "",
+      status: (res && res.status) || 0,
+    };
+    if (res && res.waf) row.waf = true;
+    (row.ok ? kicked : failed).push(row);
+  }
+  return {
+    ok: !failed.length,
+    error: failed.length ? failed[0].error || "部分设备踢下线失败" : "",
+    kicked,
+    failed,
+    kickedCount: kicked.length,
+    failedCount: failed.length,
+    waf: failed.some((x) => x.waf),
+  };
+}
+
+function toastBatchKick(res, targets, stillRows) {
+  const still = new Set((stillRows || []).map((s) => s.sessionId));
+  const lingering = (targets || []).filter((s) => still.has(s.sessionId)).length;
+  const submitted = (res && res.kickedCount) || 0;
+  const failed = (res && res.failedCount) || 0;
+  if (res && (res.waf || isWafError(res.error))) {
+    toast("批量踢下线被网站人机校验拦截，可点「去浏览器过校验」在官方页手动操作");
+  } else if (failed && !submitted) {
+    toast("批量踢下线失败：" + ((res && res.error) || "未知原因"));
+  } else if (lingering) {
+    toast(`已提交踢下线 ${submitted} 台，其中 ${lingering} 台列表里还在，没有真正踢掉`);
+  } else if (submitted) {
+    toast(`已踢下线 ${submitted} 台`);
+  } else {
+    toast("批量踢下线失败：" + ((res && res.error) || "未知原因"));
+  }
 }
 
 async function kickSession(sid, stype) {
@@ -527,6 +710,33 @@ async function kickSession(sid, stype) {
   else toast("踢下线失败：" + ((res && res.error) || "未知原因"));
 }
 
+async function kickSelectedSessions() {
+  const id = sessionModal.id;
+  if (!id || sessionModal.busyBatch || sessionModal.busySid) return;
+  const want = sessionModal.checked;
+  const targets = (sessionModal.sessions || []).filter((s) => s.sessionId && want.has(s.sessionId));
+  if (!targets.length) {
+    toast("请先勾选要删除的设备");
+    sessionModal.confirmBatch = false;
+    renderSessionModal();
+    return;
+  }
+  sessionModal.busyBatch = true;
+  sessionModal.confirmBatch = false;
+  sessionModal.confirmSid = "";
+  renderSessionModal();
+  toast(`正在踢下线 ${targets.length} 台…`);
+  let res = null;
+  try {
+    res = await revokeSessions(id, targets);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  sessionModal.busyBatch = false;
+  if (sessionModal.id === id) await loadSessions();
+  toastBatchKick(res, targets, sessionModal.sessions);
+}
+
 function onSessionBodyClick(e) {
   const btn = e.target.closest("button[data-sact]");
   if (!btn) return;
@@ -534,6 +744,7 @@ function onSessionBodyClick(e) {
   const sid = btn.getAttribute("data-sid") || "";
   if (act === "kick") {
     sessionModal.confirmSid = sid;
+    sessionModal.confirmBatch = false;
     renderSessionModal();
   } else if (act === "cancel") {
     sessionModal.confirmSid = "";
@@ -542,7 +753,34 @@ function onSessionBodyClick(e) {
     kickSession(sid, btn.getAttribute("data-stype") || "");
   } else if (act === "browser") {
     openSessionsPage(sessionModal.id);
+  } else if (act === "all") {
+    sessionModal.checked = new Set((sessionModal.sessions || []).map((s) => s.sessionId).filter(Boolean));
+    sessionModal.confirmBatch = false;
+    renderSessionModal();
+  } else if (act === "none") {
+    sessionModal.checked = new Set();
+    sessionModal.confirmBatch = false;
+    renderSessionModal();
+  } else if (act === "kick-batch") {
+    sessionModal.confirmSid = "";
+    sessionModal.confirmBatch = true;
+    renderSessionModal();
+  } else if (act === "batch-cancel") {
+    sessionModal.confirmBatch = false;
+    renderSessionModal();
+  } else if (act === "batch-confirm") {
+    kickSelectedSessions();
   }
+}
+
+function onSessionBodyChange(e) {
+  const chk = e.target.closest("input.sesschk");
+  if (!chk) return;
+  const sid = chk.getAttribute("data-sid");
+  if (chk.checked) sessionModal.checked.add(sid);
+  else sessionModal.checked.delete(sid);
+  sessionModal.confirmBatch = false;
+  renderSessionModal();
 }
 
 // ---- 进控制台 ----
@@ -605,6 +843,11 @@ const guardModal = {
   tokenType: null,
   warnEmpty: false,
   timer: null,
+  confirmKick: false,
+  kicking: false,
+  kickChecked: new Set(),
+  recentAt: 0,
+  recentSec: LOGIN_DETECT_DEFAULT_SEC,
 };
 
 function updateGuardGlobal() {
@@ -658,33 +901,47 @@ async function refreshGuardStatus(force) {
 function guardTimeLabel(ts) {
   const ms = toMs(ts);
   if (isNaN(ms)) return "—";
-  const p2 = (x) => String(x).padStart(2, "0");
-  const d = new Date(ms);
-  return `${fmtTs(ms)}:${p2(d.getSeconds())}`;
+  return fmtTsShort(ms) || "—";
 }
 
-const GUARD_INTERVAL_MIN_DEFAULT = 1;
-const GUARD_INTERVAL_MIN_MAX = 120;
+const GUARD_INTERVAL_SEC_DEFAULT = 30;
+const GUARD_INTERVAL_SEC_MIN = 5;
+const GUARD_INTERVAL_SEC_MAX = 3600;
 
-function cleanIntervalMinutes(value) {
+function cleanIntervalSeconds(value) {
   let n = parseInt(value, 10);
-  if (!Number.isFinite(n) || n < 1) n = GUARD_INTERVAL_MIN_DEFAULT;
-  if (n > GUARD_INTERVAL_MIN_MAX) n = GUARD_INTERVAL_MIN_MAX;
+  if (!Number.isFinite(n)) return GUARD_INTERVAL_SEC_DEFAULT;
+  if (n < GUARD_INTERVAL_SEC_MIN) n = GUARD_INTERVAL_SEC_MIN;
+  if (n > GUARD_INTERVAL_SEC_MAX) n = GUARD_INTERVAL_SEC_MAX;
   return n;
 }
 
-function readGuardIntervalMinutes() {
+function readGuardIntervalSeconds() {
   const el = $("guardInterval");
-  return cleanIntervalMinutes(el && el.value);
+  return cleanIntervalSeconds(el && el.value);
 }
 
-function fillGuardIntervalMinutes(value) {
+function fillGuardIntervalSeconds(value) {
   const el = $("guardInterval");
-  if (el) el.value = String(cleanIntervalMinutes(value));
+  if (el) el.value = String(cleanIntervalSeconds(value));
 }
 
-function guardIntervalLabel(minutes) {
-  return `每 ${cleanIntervalMinutes(minutes)} 分钟检测一次`;
+function guardIntervalLabel(seconds) {
+  return `每 ${cleanIntervalSeconds(seconds)} 秒检测一次`;
+}
+
+function recentLoginRowOpts() {
+  return { recentAt: guardModal.recentAt, recentSec: guardModal.recentSec };
+}
+
+function isRecentLoginRow(s) {
+  return !!(guardModal.recentAt && isRecentLogin(s && s.createdAt, guardModal.recentAt, guardModal.recentSec));
+}
+
+function recentLoginSubtext(rows) {
+  if (!guardModal.recentAt) return "";
+  const n = recentLoginCount(rows, guardModal.recentAt, guardModal.recentSec);
+  return ` · 刚登录 ${n} 台（${guardModal.recentSec}秒内）`;
 }
 
 function renderGuardModal() {
@@ -695,16 +952,20 @@ function renderGuardModal() {
   const rows = Array.isArray(m.sessions) ? m.sessions : [];
   const mineKind = tokenSessionKind(m.tokenType);
   const isLocal = !!(localUserId && id === localUserId);
-  $("guardTitle").textContent = "本机设备保护 · " + (m.email || id);
+  $("guardTitle").textContent = "本机保护";
+  const emailEl = $("guardEmail");
+  if (emailEl) emailEl.textContent = m.email || id || "";
   $("guardStart").hidden = m.running;
   $("guardStop").hidden = !m.running;
-  $("guardCancel").textContent = "收起";
-  $("guardRefresh").disabled = !!m.loading;
-  let html = "";
+  const opts = $("guardOpts");
+  if (opts) opts.classList.toggle("is-running", !!m.running);
+  $("guardRefresh").disabled = !!(m.loading || m.kicking);
+  $("guardStart").disabled = !!(m.loading || m.kicking);
+  let html = guardSwitcherHtml();
 
   if (m.running) {
     const keepIds = new Set(g.keepIds || []);
-    $("guardSub").innerHTML = `<span class="pill guard"><i class="dot"></i>保护中</span> ${guardIntervalLabel(g.intervalMinutes)}` + (m.via === "browser" ? "，经已打开的隔离浏览器读取" : "，未保留设备会被自动踢下线");
+    $("guardSub").innerHTML = `<span class="pill guard"><i class="dot"></i>保护中</span> ${guardIntervalLabel(g.intervalSeconds)}` + (m.via === "browser" ? "，经已打开的隔离浏览器读取" : "，未保留设备会被自动踢下线") + recentLoginSubtext(rows);
     html += `<div class="guard-stats">`;
     html += `<div class="gstat"><span>启动时间</span><b>${esc(guardTimeLabel(g.startedAt))}</b></div>`;
     html += `<div class="gstat"><span>最近检测</span><b>${esc(guardTimeLabel(g.lastTickAt))}</b></div>`;
@@ -731,20 +992,40 @@ function renderGuardModal() {
       if (isWafError(m.error, m.waf)) html += wafHintHtml();
     }
     if (rows.length) {
+      const selectedN = rows.filter((s) => m.kickChecked.has(s.sessionId)).length;
+      const busy = !!(m.kicking || m.loading);
+      html += `<div class="guard-toolbar">`;
+      html += `<button type="button" class="btn tiny" data-sact="kick-all"${busy ? " disabled" : ""}>全选</button>`;
+      html += `<button type="button" class="btn tiny" data-sact="kick-none"${busy ? " disabled" : ""}>全不选</button>`;
+      html += `<span class="hint">已选 ${selectedN} 台，可马上踢下线（不必等下一轮检测）</span>`;
+      html += `<button type="button" class="btn tiny danger" data-sact="kick-selected"${busy || !selectedN ? " disabled" : ""}>${m.kicking ? "踢下线中…" : "踢掉所选"}</button>`;
+      html += `</div>`;
+      if (m.confirmKick && selectedN) {
+        html += `<div class="kick-confirm"><div class="hint">确定立即踢掉已勾选的 ${selectedN} 台？成功后应立刻从列表消失。官网最多约 10 分钟才真正下线。</div>` +
+          `<div class="kick-actions"><button type="button" class="btn tiny" data-sact="kick-cancel">取消</button>` +
+          `<button type="button" class="btn tiny danger" data-sact="kick-go">确认踢掉所选</button></div></div>`;
+      }
       html += `<ul class="session-list compact">`;
-      for (const s of rows) html += `<li class="session-row">${sessionRowHtml(s, { mineKind, keepIds, accountId: id, sessions: rows })}</li>`;
+      for (const s of rows) {
+        const sid = s.sessionId || "";
+        const on = m.kickChecked.has(sid) ? " checked" : "";
+        html += `<li class="session-row selectable${on ? " picked" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}"><label class="session-pick">` +
+          `<input type="checkbox" class="kickchk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
+          sessionRowHtml(s, { mineKind, keepIds, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
+          `</label></li>`;
+      }
       html += `</ul>`;
     } else if (!m.loading && !m.error) {
       html += `<p class="modal-state">当前没有登录设备。</p>`;
     }
-    html += `<p class="hint">保留名单里的设备不会被动；名单以外的（含开启后新登录进来的）检测到即踢。列表里还在就说明没踢掉，会自动重试。要改名单：先停止保护，再重新勾选启动。</p>`;
+    html += `<p class="hint">未保留的设备（含之后新登录的）检测到即踢。列表里还在会自动重试。改保留名单需先停止再启动。</p>`;
   } else {
     const n = rows.length;
     const checkedN = rows.filter((s) => m.checked.has(s.sessionId)).length;
     $("guardSub").textContent = m.loading
       ? "正在实时拉取云端登录设备…"
       : n
-        ? `共 ${n} 台设备 · 勾选要保留的设备（已勾选 ${checkedN} 台），其余会在开启后被自动踢下线`
+        ? `共 ${n} 台 · 已勾保留 ${checkedN} 台。可先删除未勾选，再启动持续保护` + recentLoginSubtext(rows)
         : "";
     if (m.loading) {
       html += `<p class="modal-state"><span class="pill run">读取中…</span></p>`;
@@ -755,14 +1036,29 @@ function renderGuardModal() {
       html += `<p class="modal-state">当前没有登录设备，无需保护。</p>`;
     }
     if (n) {
+      const dropN = n - checkedN;
+      const busy = !!(m.kicking || m.loading);
+      html += `<div class="guard-toolbar">`;
+      html += `<button type="button" class="btn tiny" data-sact="all"${busy ? " disabled" : ""}>全选保留</button>`;
+      html += `<button type="button" class="btn tiny" data-sact="none"${busy ? " disabled" : ""}>全不选</button>`;
+      html += `<button type="button" class="btn tiny" data-sact="local"${busy ? " disabled" : ""}>只留本机</button>`;
+      html += `<span class="hint">未勾选 ${dropN} 台</span>`;
+      html += `<button type="button" class="btn tiny danger" data-sact="kick-unchecked"${busy || !dropN ? " disabled" : ""}>${m.kicking ? "删除中…" : "立即删除未勾选"}</button>`;
+      html += `</div>`;
+      if (m.confirmKick && dropN) {
+        const allWarn = !checkedN ? " 当前一台都没勾，会把所有设备（含本机 Cursor / 本工具）全部踢下线。" : "";
+        html += `<div class="kick-confirm"><div class="hint">确定立即踢掉未勾选的 ${dropN} 台？成功后应立刻从列表消失。官网最多约 10 分钟才真正下线。${esc(allWarn)}</div>` +
+          `<div class="kick-actions"><button type="button" class="btn tiny" data-sact="kick-cancel">取消</button>` +
+          `<button type="button" class="btn tiny danger" data-sact="kick-go">确认删除未勾选</button></div></div>`;
+      }
       html += `<ul class="session-list">`;
       for (const s of rows) {
         const sid = s.sessionId || "";
         const on = m.checked.has(sid) ? " checked" : "";
         html +=
-          `<li class="session-row selectable${on ? " kept" : ""}"><label class="session-pick">` +
-          `<input type="checkbox" class="guardchk" data-sid="${esc(sid)}"${on} />` +
-          sessionRowHtml(s, { mineKind, accountId: id, sessions: rows }) +
+          `<li class="session-row selectable${on ? " kept" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}"><label class="session-pick">` +
+          `<input type="checkbox" class="guardchk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
+          sessionRowHtml(s, { mineKind, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
           `<span class="pick-tag ${on ? "ok" : "bad"}">${on ? "保留" : "将被踢"}</span></label></li>`;
       }
       html += `</ul>`;
@@ -786,7 +1082,9 @@ function renderGuardModal() {
   $("guardBody").innerHTML = html;
   const iv = $("guardInterval");
   if (iv) iv.disabled = !!m.running;
-  if (m.running && g.intervalMinutes != null) fillGuardIntervalMinutes(g.intervalMinutes);
+  if (m.running && g.intervalSeconds != null) fillGuardIntervalSeconds(g.intervalSeconds);
+  const detectBtn = $("guardDetect");
+  if (detectBtn) detectBtn.disabled = !!m.loading || !id || !!m.kicking;
   const browserBtn = $("guardBrowser");
   if (browserBtn) {
     const viaBrowser = m.via === "browser" || m.browserOpen;
@@ -828,6 +1126,10 @@ async function loadGuardSessions() {
   }
   guardModal.sessions = rows;
   applySessionBlock(id, res);
+  {
+    const present = new Set(rows.map((s) => s.sessionId));
+    guardModal.kickChecked = new Set([...guardModal.kickChecked].filter((sid) => present.has(sid)));
+  }
   if (!guardModal.running) {
     const present = new Set(rows.map((s) => s.sessionId));
     if (!guardModal.prechecked && rows.length) {
@@ -850,7 +1152,7 @@ async function loadGuardSessions() {
 }
 
 function isGuardPanelOpen() {
-  const el = $("guardCard");
+  const el = $("guardMask") || $("guardCard");
   return !!(el && !el.hidden);
 }
 
@@ -874,6 +1176,25 @@ function firstRunningGuardId() {
   return running[0][0];
 }
 
+function runningGuardIds() {
+  return Object.entries(guardStatus || {})
+    .filter(([, g]) => g && g.running)
+    .map(([k]) => k);
+}
+
+function guardSwitcherHtml() {
+  const ids = runningGuardIds().filter((id) => accounts.some((a) => a.id === id) || id === guardModal.id);
+  if (ids.length < 2) return "";
+  let html = `<div class="guard-switch"><span class="hint">保护中 ${ids.length} 个账号，点邮箱切换</span>`;
+  for (const id of ids) {
+    const a = accounts.find((x) => x.id === id);
+    const on = id === guardModal.id;
+    html += `<button type="button" class="btn tiny${on ? " primary" : ""}" data-sact="switch" data-id="${esc(id)}">${esc(accountMail(a, id))}</button>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
 function openGuardFromGlobal() {
   const id = firstRunningGuardId() || guardModal.id;
   if (id) openGuard(id);
@@ -882,7 +1203,7 @@ function openGuardFromGlobal() {
 async function openGuard(id) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
-  setTab("accounts");
+  setMainTab("accounts");
   const same = guardModal.id === id && isGuardPanelOpen();
   if (!same) {
     guardModal.id = id;
@@ -896,22 +1217,31 @@ async function openGuard(id) {
     guardModal.waf = false;
     guardModal.via = "";
     guardModal.browserOpen = false;
+    guardModal.confirmKick = false;
+    guardModal.kicking = false;
+    guardModal.kickChecked = new Set();
+    guardModal.recentAt = 0;
+    guardModal.recentSec = clampLoginDetectSec(settings.loginDetectSec);
   }
+  const mask = $("guardMask");
   const card = $("guardCard");
-  card.hidden = false;
+  if (mask) mask.hidden = false;
+  if (card) card.hidden = false;
   await refreshGuardStatus(false);
   if (guardModal.id !== id) return;
   const g = guardStatus[id];
   guardModal.running = !!(g && g.running);
-  if (g && g.intervalMinutes != null) fillGuardIntervalMinutes(g.intervalMinutes);
-  else if (!same) fillGuardIntervalMinutes(GUARD_INTERVAL_MIN_DEFAULT);
+  if (g && g.intervalSeconds != null) fillGuardIntervalSeconds(g.intervalSeconds);
+  else if (!same) fillGuardIntervalSeconds(GUARD_INTERVAL_SEC_DEFAULT);
   renderGuardModal();
   startGuardPanelTimer();
-  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
   await loadGuardSessions();
 }
 
 function hideGuard() {
+  hideLoginDetect();
+  const mask = $("guardMask");
+  if (mask) mask.hidden = true;
   const card = $("guardCard");
   if (card) card.hidden = true;
   stopGuardPanelTimer();
@@ -920,22 +1250,125 @@ function hideGuard() {
 function onGuardBodyClick(e) {
   const btn = e.target.closest("button[data-sact]");
   if (!btn) return;
-  if (btn.getAttribute("data-sact") === "browser") openSessionsPage(guardModal.id);
+  const act = btn.getAttribute("data-sact");
+  if (act === "browser") {
+    openSessionsPage(guardModal.id);
+  } else if (act === "switch") {
+    const id = btn.getAttribute("data-id");
+    if (id && id !== guardModal.id) openGuard(id);
+  } else if (act === "all") {
+    guardModal.checked = new Set((guardModal.sessions || []).map((s) => s.sessionId).filter(Boolean));
+    guardModal.warnEmpty = false;
+    guardModal.confirmKick = false;
+    renderGuardModal();
+  } else if (act === "none") {
+    guardModal.checked = new Set();
+    guardModal.warnEmpty = false;
+    guardModal.confirmKick = false;
+    renderGuardModal();
+  } else if (act === "local") {
+    keepLocalOnly();
+  } else if (act === "kick-unchecked") {
+    guardModal.confirmKick = true;
+    renderGuardModal();
+  } else if (act === "kick-all") {
+    guardModal.kickChecked = new Set((guardModal.sessions || []).map((s) => s.sessionId).filter(Boolean));
+    guardModal.confirmKick = false;
+    renderGuardModal();
+  } else if (act === "kick-none") {
+    guardModal.kickChecked = new Set();
+    guardModal.confirmKick = false;
+    renderGuardModal();
+  } else if (act === "kick-selected") {
+    guardModal.confirmKick = true;
+    renderGuardModal();
+  } else if (act === "kick-cancel") {
+    guardModal.confirmKick = false;
+    renderGuardModal();
+  } else if (act === "kick-go") {
+    if (guardModal.running) kickGuardSelected();
+    else kickGuardUnchecked();
+  }
 }
 
 function onGuardBodyChange(e) {
-  const chk = e.target.closest("input.guardchk");
-  if (!chk) return;
-  const sid = chk.getAttribute("data-sid");
-  if (chk.checked) guardModal.checked.add(sid);
-  else guardModal.checked.delete(sid);
-  guardModal.warnEmpty = false;
+  const keepChk = e.target.closest("input.guardchk");
+  if (keepChk) {
+    const sid = keepChk.getAttribute("data-sid");
+    if (keepChk.checked) guardModal.checked.add(sid);
+    else guardModal.checked.delete(sid);
+    guardModal.warnEmpty = false;
+    guardModal.confirmKick = false;
+    renderGuardModal();
+    return;
+  }
+  const kickChk = e.target.closest("input.kickchk");
+  if (!kickChk) return;
+  const sid = kickChk.getAttribute("data-sid");
+  if (kickChk.checked) guardModal.kickChecked.add(sid);
+  else guardModal.kickChecked.delete(sid);
+  guardModal.confirmKick = false;
   renderGuardModal();
+}
+
+function keepLocalOnly() {
+  const rows = guardModal.sessions || [];
+  const id = guardModal.id;
+  const picked = new Set();
+  for (const s of rows) {
+    const mark = resolveLocalMark(s, { accountId: id, sessions: rows });
+    if (mark === "local" || mark === "maybe-local") picked.add(s.sessionId);
+  }
+  if (!picked.size) {
+    toast("当前看不出哪台是本机，请手动勾选要保留的");
+    return;
+  }
+  guardModal.checked = picked;
+  guardModal.warnEmpty = false;
+  guardModal.confirmKick = false;
+  renderGuardModal();
+}
+
+async function kickGuardUnchecked() {
+  const id = guardModal.id;
+  if (!id || guardModal.kicking) return;
+  const targets = (guardModal.sessions || []).filter((s) => s.sessionId && !guardModal.checked.has(s.sessionId));
+  await kickGuardTargets(id, targets);
+}
+
+async function kickGuardSelected() {
+  const id = guardModal.id;
+  if (!id || guardModal.kicking) return;
+  const want = guardModal.kickChecked;
+  const targets = (guardModal.sessions || []).filter((s) => s.sessionId && want.has(s.sessionId));
+  await kickGuardTargets(id, targets);
+}
+
+async function kickGuardTargets(id, targets) {
+  if (!targets.length) {
+    toast("没有要删除的设备");
+    guardModal.confirmKick = false;
+    renderGuardModal();
+    return;
+  }
+  guardModal.kicking = true;
+  guardModal.confirmKick = false;
+  renderGuardModal();
+  toast(`正在踢下线 ${targets.length} 台…`);
+  let res = null;
+  try {
+    res = await revokeSessions(id, targets);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  }
+  guardModal.kicking = false;
+  if (guardModal.id === id) await loadGuardSessions();
+  toastBatchKick(res, targets, guardModal.sessions);
 }
 
 async function startGuard() {
   const id = guardModal.id;
-  if (!id || guardModal.loading) return;
+  if (!id || guardModal.loading || guardModal.kicking) return;
   const present = new Set((guardModal.sessions || []).map((s) => s.sessionId));
   const keep = [...guardModal.checked].filter((sid) => present.has(sid));
   if (!keep.length) {
@@ -945,12 +1378,12 @@ async function startGuard() {
     return;
   }
   const others = present.size - keep.length;
-  const minutes = readGuardIntervalMinutes();
-  fillGuardIntervalMinutes(minutes);
+  const seconds = readGuardIntervalSeconds();
+  fillGuardIntervalSeconds(seconds);
   $("guardStart").disabled = true;
   let res = null;
   try {
-    res = await api().device_guard_start(id, keep, minutes);
+    res = await api().device_guard_start(id, keep, seconds);
   } catch (e) {
     res = { ok: false, error: String(e) };
   }
@@ -959,7 +1392,7 @@ async function startGuard() {
     toast("开启失败：" + ((res && res.error) || "未知原因"));
     return;
   }
-  toast(`已开启本机保护：保留 ${keep.length} 台，${guardIntervalLabel(minutes)}，并自动下线其他设备` + (others ? `（当前将踢 ${others} 台）` : ""));
+  toast(`已开启本机保护：保留 ${keep.length} 台，${guardIntervalLabel(seconds)}，并自动下线其他设备` + (others ? `（当前将踢 ${others} 台）` : ""));
   if (guardModal.id === id) guardModal.running = true;
   await refreshGuardStatus(true);
 }
@@ -987,15 +1420,144 @@ async function stopGuard(id) {
   }
 }
 
-function toggleGuard(id) {
-  const g = guardStatus[id];
-  if (g && g.running) stopGuard(id);
-  else openGuard(id);
+async function startGuardAutoOne(id, seconds) {
+  const bridge = api();
+  if (bridge && bridge.device_guard_start_auto) {
+    return await bridge.device_guard_start_auto(id, seconds);
+  }
+  const listed = await bridge.list_sessions(id);
+  if (!listed || !listed.ok) {
+    return { ok: false, error: (listed && listed.error) || "读取设备失败", waf: !!(listed && listed.sessionWaf) };
+  }
+  const saved = ((guardStatus[id] || {}).keepIds) || [];
+  const isLocal = !!(localUserId && id === localUserId);
+  const rows = listed.sessions || [];
+  const present = [];
+  const clients = [];
+  const seen = new Set();
+  for (const s of rows) {
+    const sid = s && s.sessionId;
+    if (!sid || seen.has(sid)) continue;
+    seen.add(sid);
+    present.push(sid);
+    if (s.type === "client") clients.push(sid);
+  }
+  const keepSaved = saved.filter((sid) => seen.has(sid));
+  const keep = keepSaved.length ? keepSaved : isLocal && clients.length ? clients : present;
+  if (!keep.length) return { ok: false, error: "当前没有登录设备，无法开启保护" };
+  const res = await bridge.device_guard_start(id, keep, seconds);
+  if (res && res.ok) res.keepCount = keep.length;
+  return res;
 }
 
-// ---- 行操作：桌面端在操作列直接排开；窄屏隐藏操作列，改为账号格里的「操作」按钮弹出菜单 ----
+async function runGuardBatch(kind) {
+  if (busy) return;
+  const ids = selectedIds();
+  if (!ids.length) {
+    toast(kind === "stop" ? "请先勾选要停止保护的账号" : "请先勾选要保护的账号（可多选）");
+    return;
+  }
+  if (kind === "start") {
+    const pending = ids.filter((id) => !(guardStatus[id] && guardStatus[id].running));
+    if (!pending.length) {
+      toast("勾选的账号都已在保护中");
+      return;
+    }
+    if (
+      !window.confirm(
+        `将为 ${pending.length} 个账号开启本机保护。每个号保留当前在线设备（有上次勾选则沿用），之后新登录会被自动踢下线。已在保护中的会跳过。`
+      )
+    ) {
+      return;
+    }
+    const seconds = readGuardIntervalSeconds();
+    fillGuardIntervalSeconds(seconds);
+    const wrap = $("progressWrap");
+    const bar = $("progressBar");
+    const text = $("progressText");
+    wrap.hidden = false;
+    const total = pending.length;
+    let done = 0;
+    let next = 0;
+    const conc = readConcurrency();
+    const tally = { ok: 0, skipped: 0, failed: 0 };
+    let firstOk = "";
+    bar.style.width = "0%";
+    text.textContent = `保护 0/${total}（并发 ${conc}）`;
+    busy = true;
+    render();
+    async function worker() {
+      while (next < pending.length) {
+        const id = pending[next++];
+        let res = null;
+        try {
+          res = await startGuardAutoOne(id, seconds);
+        } catch (e) {
+          res = { ok: false, error: String(e) };
+        }
+        if (res && res.skipped) tally.skipped += 1;
+        else if (res && res.ok) {
+          tally.ok += 1;
+          if (!firstOk) firstOk = id;
+        } else tally.failed += 1;
+        done += 1;
+        bar.style.width = ((done / total) * 100).toFixed(1) + "%";
+        text.textContent = `保护 ${done}/${total}（并发 ${conc}）`;
+        await refreshGuardStatus(true);
+      }
+    }
+    const workers = [];
+    for (let i = 0; i < Math.min(conc, total); i++) workers.push(worker());
+    await Promise.all(workers);
+    busy = false;
+    render();
+    bar.style.width = "100%";
+    text.textContent = `完成 ${done}/${total}`;
+    setTimeout(() => (wrap.hidden = true), 1500);
+    toast(
+      `批量保护完成：新开 ${tally.ok}` +
+        (tally.skipped ? `，已在保护中 ${tally.skipped}` : "") +
+        (tally.failed ? `，失败 ${tally.failed}` : "")
+    );
+    if (firstOk) openGuard(firstOk);
+    else await refreshGuardStatus(true);
+    return;
+  }
 
-function rowActions(a, st) {
+  const running = ids.filter((id) => guardStatus[id] && guardStatus[id].running);
+  if (!running.length) {
+    toast("勾选的账号都没有在保护中");
+    return;
+  }
+  if (!window.confirm(`停止 ${running.length} 个账号的本机保护？`)) return;
+  let stopped = 0;
+  let failed = 0;
+  for (const id of running) {
+    let res = null;
+    try {
+      res = await api().device_guard_stop(id);
+    } catch (e) {
+      res = { ok: false, error: String(e) };
+    }
+    if (res && res.ok) stopped += 1;
+    else failed += 1;
+  }
+  if (guardModal.id && running.includes(guardModal.id) && isGuardPanelOpen()) {
+    guardModal.running = false;
+    guardModal.prechecked = false;
+    await refreshGuardStatus(true);
+    await loadGuardSessions();
+  } else {
+    await refreshGuardStatus(true);
+  }
+  toast(`已停止 ${stopped} 个账号的保护` + (failed ? `，失败 ${failed}` : ""));
+}
+
+// 行操作分组：
+//   右侧操作列 = 账号主操作；账号格「显示 Token」右侧 = 票/浏览器类。
+//   窄屏隐藏操作列，改为账号格里的「操作」按钮弹出全部动作。
+
+function rowMainActions(a, st) {
   const webTok = String(a.tokenType || "").toLowerCase() === "web";
   const g = guardStatus[a.id];
   const guarding = !!(g && g.running);
@@ -1004,20 +1566,42 @@ function rowActions(a, st) {
     { act: "claim", label: "领取", cls: "primary", title: "领取 Sand 资格", disabled: dis },
     { act: "verify", label: "验证", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
     { act: "switch", label: "切号", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
-    { act: "browser", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
     { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending）" },
     { act: "devices", label: "查看设备", title: "实时查看云端登录设备，可踢下线（成功后应立刻从列表消失）" },
     {
       act: "guard",
-      label: guarding ? "停止保护" : "本机保护",
-      cls: guarding ? "danger guarding" : "guard",
+      label: "本机保护",
+      cls: guarding ? "guard guarding" : "guard",
       title: guarding
-        ? `停止本机设备保护（运行中：已踢 ${(g && g.kickedCount) || 0} 台）`
-        : "开启前勾选要保留的设备并设置检测间隔，之后按间隔自动下线未保留设备",
+        ? `打开本机保护抽屉（运行中：已踢 ${(g && g.kickedCount) || 0} 台）。停止保护在抽屉里操作`
+        : "从右侧打开本机保护抽屉：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备",
     },
-    { act: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
     { act: "remove", label: "移除", cls: "danger", disabled: dis },
   ];
+}
+
+function rowSideActions(a, st) {
+  const dis = !!busy;
+  return [
+    {
+      act: "probeRefresh",
+      label: "探测票",
+      title: "从本机 Cursor 或已存数据探测并记录 refresh_token",
+      disabled: dis,
+    },
+    {
+      act: "refreshLogin",
+      label: "刷登录票",
+      title: "用已记录的 refresh_token 换取新的 access_token",
+      disabled: dis || !a.hasRefresh,
+    },
+    { act: "browser", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
+    { act: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
+  ];
+}
+
+function rowActions(a, st) {
+  return rowMainActions(a, st).concat(rowSideActions(a, st));
 }
 
 function actionButtonsHtml(id, list) {
@@ -1062,6 +1646,88 @@ function poolRow(cls, key, pct, extra) {
     `<span class="mono">${esc(fmtPercent(pct))}</span><div class="bar"><i class="${full}" style="width:${v}%"></i></div>${extra || ""}` +
     `</div></div>`
   );
+}
+
+function tokenCell(a) {
+  if (!rowTokensOn(a.id)) return "";
+  const view = tokenViews[a.id] || {};
+  const ws = view.worksessionToken || "";
+  const rt = view.refreshToken || "";
+  const wsBody = ws
+    ? `<code class="token-v">${esc(ws)}</code>`
+    : `<span class="token-v missing">未读取到 Worksession</span>`;
+  const rtBody = rt
+    ? `<code class="token-v">${esc(rt)}</code>`
+    : `<span class="token-v missing">未记录 · 可先点「探测 Refresh」</span>`;
+  const wsCopy = ws
+    ? `<button type="button" class="btn tiny" data-act="copyToken" data-id="${esc(a.id)}" data-kind="worksession" title="复制 Worksession token">复制</button>`
+    : "";
+  const rtCopy = rt
+    ? `<button type="button" class="btn tiny" data-act="copyToken" data-id="${esc(a.id)}" data-kind="refresh" title="复制 refresh_token">复制</button>`
+    : "";
+  return (
+    `<tr class="token-detail" data-id="${esc(a.id)}"><td colspan="7">` +
+    `<div class="token-box">` +
+    `<div class="token-row"><span class="token-k">Worksession</span>${wsBody}${wsCopy}</div>` +
+    `<div class="token-row"><span class="token-k">Refresh</span>${rtBody}${rtCopy}</div>` +
+    `</div></td></tr>`
+  );
+}
+
+function showTokensOn() {
+  const btn = $("btnShowTokens");
+  if (btn) return btn.getAttribute("aria-pressed") === "true";
+  const el = $("showTokensChk");
+  return el ? el.checked : false;
+}
+
+function rowTokensOn(id) {
+  return showTokensOn() || tokenOpenIds.has(id);
+}
+
+function syncShowTokensButton() {
+  const btn = $("btnShowTokens");
+  if (!btn) return;
+  const on = showTokensOn();
+  btn.textContent = on ? "隐藏 Token" : "显示 Token";
+  btn.classList.toggle("primary", on);
+}
+
+async function loadTokenViews() {
+  if (!showTokensOn() && tokenOpenIds.size === 0) {
+    tokenViews = {};
+    return;
+  }
+  try {
+    const res = await api().list_account_tokens();
+    tokenViews = (res && res.ok && res.tokens) || {};
+  } catch (e) {
+    tokenViews = {};
+  }
+}
+
+async function setShowTokens(on) {
+  const btn = $("btnShowTokens");
+  if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+  const chk = $("showTokensChk");
+  if (chk) chk.checked = !!on;
+  if (on) tokenOpenIds.clear();
+  else tokenOpenIds.clear();
+  syncShowTokensButton();
+  await saveSettings({ showTokens: !!on });
+  await loadTokenViews();
+  render();
+}
+
+async function toggleRowToken(id) {
+  if (showTokensOn()) {
+    await setShowTokens(false);
+    return;
+  }
+  if (tokenOpenIds.has(id)) tokenOpenIds.delete(id);
+  else tokenOpenIds.add(id);
+  await loadTokenViews();
+  render();
 }
 
 function quotaCell(st) {
@@ -1134,12 +1800,22 @@ function render() {
       const tokTag = webTok
         ? `<span class="pill warn mini" title="网站会话：切号时会自动换成客户端登录票，稍慢几秒">网站会话</span>`
         : "";
+      const refreshAt = a.refreshRecordedAt ? fmtTs(toMs(a.refreshRecordedAt)) : "";
+      const refreshTag = a.hasRefresh
+        ? `<span class="pill ok mini" title="已记录 refresh_token${refreshAt ? " · " + refreshAt : ""}">Refresh</span>`
+        : "";
       const addedAt = a.addedAt ? fmtTs(toMs(a.addedAt)) : "";
       const checkedAt = st && st.checkedAt ? fmtTs(toMs(st.checkedAt)) : "";
       const meta =
-        `<div class="meta">${validityPill(st)}${tokTag}${sessionPills(a, st)}` +
+        `<div class="meta">${validityPill(st)}${tokTag}${refreshTag}${sessionPills(a, st)}` +
         `<span title="导入时间">导入 ${esc(addedAt || "—")}</span>` +
         (checkedAt ? `<span title="上次验证时间">验证 ${esc(checkedAt)}</span>` : "") +
+        `</div>`;
+      const sideBtns = actionButtonsHtml(a.id, rowSideActions(a, st));
+      const tokenBtn =
+        `<div class="token-toggle">` +
+        `<button type="button" class="btn tiny${rowTokensOn(a.id) ? " primary" : ""}" data-act="showToken" data-id="${esc(a.id)}" title="显示或隐藏 Worksession / Refresh token">${rowTokensOn(a.id) ? "隐藏 Token" : "显示 Token"}</button>` +
+        sideBtns +
         `</div>`;
       const dead = st && st.alive === false;
       const dis = busy ? " disabled" : "";
@@ -1147,22 +1823,20 @@ function render() {
       const rowCls = [dead ? "dead" : "", guarding ? "guarding" : ""].filter(Boolean).join(" ");
       return `<tr data-id="${esc(a.id)}"${rowCls ? ` class="${rowCls}"` : ""}>
         <td class="col-chk"><input type="checkbox" class="rowchk" data-id="${esc(a.id)}"${checked}${dis} /></td>
-        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}
+        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}${tokenBtn}
           <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></td>
         <td>${planCell(st)}</td>
         <td>${expiryCell(a, st)}</td>
         <td>${statusCell(st)}</td>
-        <td>${quotaCell(st)}</td>
+        <td class="col-quota">${quotaCell(st)}</td>
         <td class="col-act"><div class="act-wrap">
-          ${actionButtonsHtml(a.id, rowActions(a, st))}
+          ${actionButtonsHtml(a.id, rowMainActions(a, st))}
         </div></td>
-      </tr>`;
+      </tr>${tokenCell(a)}`;
     })
     .join("");
   $("emptyHint").hidden = accounts.length > 0;
   $("countPill").textContent = accounts.length + " 个";
-  const tabCount = $("tabAccountCount");
-  if (tabCount) tabCount.textContent = String(accounts.length);
   syncSelectAll();
   updateStats();
 }
@@ -1388,6 +2062,47 @@ async function verifyOne(id) {
   render();
 }
 
+async function probeRefreshOne(id) {
+  if (busy) return;
+  toast("正在探测 refresh_token…");
+  try {
+    const res = await api().probe_refresh_one(id);
+    if (res && res.ok) {
+      accounts = res.accounts || accounts;
+      const src = res.source === "local" ? "本机" : res.source === "stored" ? "已存" : res.source || "";
+      toast(
+        `已记录 Refresh${src ? "（" + src + "）" : ""}` +
+          (res.sameAsAccess ? " · 与 access 相同（session 票常见）" : "")
+      );
+      await loadTokenViews();
+      render();
+    } else {
+      toast("探测失败：" + ((res && res.error) || "未知原因"));
+    }
+  } catch (e) {
+    toast("探测失败：" + String(e));
+  }
+}
+
+async function refreshLoginOne(id) {
+  if (busy) return;
+  toast("正在用 refresh_token 换取新登录票…");
+  try {
+    const res = await api().refresh_login_one(id);
+    if (res && res.ok) {
+      accounts = res.accounts || accounts;
+      toast("登录票已刷新" + (res.tokenType ? "（" + res.tokenType + "）" : ""));
+      await loadTokenViews();
+      if (autoVerifyEnabled()) verifyOne(id);
+      else render();
+    } else {
+      toast("刷新失败：" + ((res && res.error) || "未知原因"));
+    }
+  } catch (e) {
+    toast("刷新失败：" + String(e));
+  }
+}
+
 function autoVerifyEnabled() {
   const el = $("autoVerifyChk");
   return el ? el.checked : true;
@@ -1403,12 +2118,59 @@ async function detectLocal() {
     }
     accounts = res.accounts || [];
     await refreshLocalIdentity();
+    await loadTokenViews();
     render();
     toast("已探测本机账号：" + (res.email || res.id || "本机"));
     if (res.id && autoVerifyEnabled()) runBatch("verify", [res.id]);
   } catch (e) {
     toast("探测失败：" + String(e));
   }
+}
+
+function switchConfirmCopy(email, resetMid, webTok) {
+  const who = String(email || "").trim() || "该账号";
+  const lines = [
+    `确定把本机 Cursor 切到 ${who}？`,
+    "会先关掉当前 Cursor，写入登录态后再自动重启。",
+  ];
+  if (webTok) lines.push("这是网站会话，切号时会先换成客户端登录票，大约多几秒。");
+  if (resetMid) lines.push("已勾选「切号重置机器码」，本机机器码也会一起换掉。");
+  return lines;
+}
+
+let pendingSwitchId = null;
+
+function openSwitchConfirm(id) {
+  if (!id) return;
+  pendingSwitchId = id;
+  const a = accounts.find((x) => x.id === id);
+  const resetMid = !!($("resetMidChk") && $("resetMidChk").checked);
+  const webTok = a && String(a.tokenType || "").toLowerCase() === "web";
+  const body = $("switchConfirmBody");
+  if (body) {
+    body.innerHTML = switchConfirmCopy(accountMail(a, id), resetMid, webTok)
+      .map((line) => `<p class="hint">${esc(line)}</p>`)
+      .join("");
+  }
+  const el = $("switchConfirmMask");
+  if (el) el.hidden = false;
+}
+
+function hideSwitchConfirm() {
+  pendingSwitchId = null;
+  const el = $("switchConfirmMask");
+  if (el) el.hidden = true;
+}
+
+function isSwitchConfirmOpen() {
+  const el = $("switchConfirmMask");
+  return !!(el && !el.hidden);
+}
+
+function confirmSwitch() {
+  const id = pendingSwitchId;
+  hideSwitchConfirm();
+  if (id) switchAccount(id);
 }
 
 async function switchAccount(id) {
@@ -1556,6 +2318,7 @@ async function runBatch(kind, idsOverride) {
 // 导入之后：刷新列表，并按设置自动验证刚导入的账号（识别邮箱 / 用量 / 订阅剩余）。
 async function afterImport(res, verb) {
   accounts = (res && res.accounts) || [];
+  await loadTokenViews();
   render();
   const ids = (res && res.ids) || [];
   if (!ids.length) {
@@ -1595,6 +2358,7 @@ async function clearAll() {
   for (const k of Object.keys(rowState)) delete rowState[k];
   selected.clear();
   lastPersisted = {};
+  tokenViews = {};
   api().save_status({});
   render();
   toast("已清空");
@@ -1614,6 +2378,7 @@ async function removeSelected() {
     for (const id of ids) {
       delete rowState[id];
       delete lastPersisted[id];
+      delete tokenViews[id];
       selected.delete(id);
     }
     schedulePersist();
@@ -1655,7 +2420,17 @@ async function copyText(text) {
   return false;
 }
 
-// 单条记录：复制该账号 + token（邮箱----user_id::token，和导入格式一致，可直接粘回「添加到列表」）。
+async function copyTokenOne(id, kind) {
+  const view = tokenViews[id] || {};
+  const text = kind === "refresh" ? view.refreshToken : view.worksessionToken;
+  if (!text) {
+    toast(kind === "refresh" ? "还没有 refresh_token，请先探测 Refresh" : "没有 Worksession token");
+    return;
+  }
+  const ok = await copyText(text);
+  toast(ok ? (kind === "refresh" ? "已复制 Refresh token" : "已复制 Worksession token") : "复制失败");
+}
+
 async function copyAccount(id) {
   let res;
   try {
@@ -1815,7 +2590,7 @@ async function exportAllClassified() {
     .join(" · ");
   const unrefreshed = buckets.unverified.length;
   const header = [
-    `Sand 资格领取器 导出 ${fmtTs(Date.now())} · 共 ${seen.size} 个账号 · 先按套餐分大类（Ultra > Pro+ > Pro > 团队 > Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，段内按剩余时间从短到长（最先到期在最前）`,
+    `cursor账号管理器 导出 ${fmtTs(Date.now())} · 共 ${seen.size} 个账号 · 先按套餐分大类（Ultra > Pro+ > Pro > 团队 > Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，段内按剩余时间从短到长（最先到期在最前）`,
     `套餐分布：${summary}`,
     "账号行格式：邮箱----user_id::token（可原样粘回导入）；以 # 开头的是注释，[n] 与下方第 n 行账号一一对应",
   ];
@@ -1842,11 +2617,11 @@ async function exportAllClassified() {
 function onTableClick(e) {
   const btn = e.target.closest("button[data-act]");
   if (!btn) return;
-  dispatchAction(btn.getAttribute("data-act"), btn.getAttribute("data-id"));
+  dispatchAction(btn.getAttribute("data-act"), btn.getAttribute("data-id"), btn);
 }
 
 // 表格操作列 / 账号格标签 / 窄屏「操作」菜单 共用一个分发口。
-function dispatchAction(act, id) {
+function dispatchAction(act, id, btn) {
   if (!id) return;
   // 查看设备 / 进控制台 / 本机保护 与批量领取、验证互不影响，忙碌时也可用。
   if (act === "sessions" || act === "devices") {
@@ -1858,7 +2633,7 @@ function dispatchAction(act, id) {
     return;
   }
   if (act === "guard") {
-    toggleGuard(id);
+    openGuard(id);
     return;
   }
   if (act === "dashboard") {
@@ -1869,6 +2644,14 @@ function dispatchAction(act, id) {
     openRowMenu(id);
     return;
   }
+  if (act === "showToken") {
+    toggleRowToken(id);
+    return;
+  }
+  if (act === "copyToken") {
+    copyTokenOne(id, btn && btn.getAttribute("data-kind"));
+    return;
+  }
   if (busy) return;
   if (act === "remove") {
     api()
@@ -1877,6 +2660,7 @@ function dispatchAction(act, id) {
         accounts = list || [];
         delete rowState[id];
         delete lastPersisted[id];
+        delete tokenViews[id];
         selected.delete(id);
         schedulePersist();
         render();
@@ -1884,13 +2668,17 @@ function dispatchAction(act, id) {
   } else if (act === "browser") {
     openLogin(id);
   } else if (act === "switch") {
-    switchAccount(id);
+    openSwitchConfirm(id);
   } else if (act === "copy") {
     copyAccount(id);
   } else if (act === "claim") {
     claimOne(id);
   } else if (act === "verify") {
     verifyOne(id);
+  } else if (act === "probeRefresh") {
+    probeRefreshOne(id);
+  } else if (act === "refreshLogin") {
+    refreshLoginOne(id);
   }
 }
 
@@ -1909,227 +2697,6 @@ function onSelectAll(e) {
   render();
 }
 
-// ---- 补丁面板：逐条规则 + 逐步报告 + 日志验证 ----
-
-const RULE_PILL = { applied: "ok", partial: "warn", pending: "idle", missing: "bad" };
-
-function ruleRow(r) {
-  const cls = r.optional && r.status === "missing" ? "idle" : RULE_PILL[r.status] || "idle";
-  const label = r.optional && r.status === "missing" ? "可选·无锚点" : r.statusLabel || r.status;
-  const files = r.files && r.files.length ? `<div class="rule-files mono">${esc(r.files.join("  "))}</div>` : "";
-  const fix = r.fix && !(r.optional && r.status === "missing") ? `<div class="rule-fix">修法：${esc(r.fix)}</div>` : "";
-  return (
-    `<div class="rule ${r.stream ? "stream" : ""}">` +
-    `<span class="pill mini ${cls}">${esc(label)}</span>` +
-    `<div class="rule-body"><div class="rule-title">${esc(r.title)}${r.optional ? '<span class="hint"> · 可选</span>' : ""}</div>` +
-    `<div class="hint">${esc(r.why)}</div>${files}${fix}</div></div>`
-  );
-}
-
-function renderRules(res) {
-  const box = $("patchRules");
-  const rules = (res && res.rules) || [];
-  if (!rules.length) {
-    box.hidden = true;
-    return;
-  }
-  const s = res.summary || {};
-  const verdictPill =
-    s.verdict === "full"
-      ? `<span class="pill ok mini">${s.applied}/${s.required} 条必需规则全部生效</span>`
-      : s.verdict === "partial"
-        ? `<span class="pill warn mini">只有 ${s.applied}/${s.required} 条生效——补丁没打全</span>`
-        : `<span class="pill idle mini">0/${s.required} 条生效——未打补丁</span>`;
-  let run = "";
-  if (res.runningElsewhere && res.runningElsewhere.length && !res.runningFromPatched) {
-    run = `<div class="rule-fix">⚠ 正在运行的 Cursor 不是这一份（${esc(res.runningElsewhere.join("；"))}）——补丁打在 ${esc(res.path || "")}，你打开的却是另一个安装，当然「没生效」。用「设置路径」指到你实际用的那份再打。</div>`;
-  } else if (res.otherInstalls && res.otherInstalls.length) {
-    run = `<div class="hint">本机还有其他 Cursor 安装：${esc(res.otherInstalls.join("；"))}（补丁只写进当前这份）</div>`;
-  }
-  box.innerHTML =
-    `<div class="rules-head">${verdictPill}<span class="hint">每条规则单独判定：已生效 = 标记已写入；未打 = 找到锚点但还没改；锚点缺失 = 这个 Cursor 构建里找不到该代码（版本不符）</span></div>` +
-    run +
-    rules.map(ruleRow).join("");
-  box.hidden = false;
-}
-
-const STEP_GLYPH = { ok: "✓", warn: "⚠", fail: "✗", skip: "–" };
-
-function renderInstallReport(rep) {
-  const box = $("patchReport");
-  if (!rep) {
-    box.hidden = true;
-    return;
-  }
-  const cls = rep.verdict === "full" ? "ok" : rep.verdict === "partial" ? "warn" : "bad";
-  const steps = (rep.steps || [])
-    .map(
-      (s) =>
-        `<li class="step ${s.status}"><span class="glyph">${STEP_GLYPH[s.status] || "·"}</span>` +
-        `<div><b>${esc(s.title)}</b>${s.detail ? `<div class="hint">${esc(s.detail)}</div>` : ""}` +
-        `${s.fix ? `<div class="rule-fix">修法：${esc(s.fix)}</div>` : ""}</div></li>`
-    )
-    .join("");
-  box.innerHTML =
-    `<div class="report-head"><span class="pill ${cls}">${rep.verdict === "full" ? "补丁成功" : rep.verdict === "partial" ? "部分成功 / 需确认" : "补丁失败"}</span> ${esc(rep.headline || "")}</div>` +
-    `<ol class="steps">${steps}</ol>` +
-    (rep.backupDir ? `<div class="hint mono">备份：${esc(rep.backupDir)}</div>` : "") +
-    `<div class="hint">把这一段截图发群里，群主就能看出到底卡在哪一步。</div>`;
-  box.hidden = false;
-}
-
-function renderRuntimeReport(rep) {
-  const box = $("patchReport");
-  if (!rep) {
-    box.hidden = true;
-    return;
-  }
-  const cls = rep.verdict === "working" || rep.verdict === "ready" ? "ok" : rep.verdict === "partial" ? "warn" : rep.verdict === "broken" ? "bad" : "idle";
-  const label = { working: "已生效", ready: "已就绪", partial: "部分回落云端", broken: "未生效", unknown: "无法判断", "no-log": "没有日志" }[rep.verdict] || rep.verdict;
-  const checks = (rep.checks || [])
-    .map((c) => `<li class="step ${c.ok ? "ok" : "fail"}"><span class="glyph">${c.ok ? "✓" : "✗"}</span><div><b>${esc(c.title)}</b>${c.detail ? `<div class="hint">${esc(c.detail)}</div>` : ""}</div></li>`)
-    .join("");
-  const turns = (rep.turns || [])
-    .map(
-      (t) =>
-        `<tr><td class="mono">${esc((t.time || "").slice(5, 19))}</td><td>${esc(t.action || "")}</td>` +
-        `<td><span class="pill mini ${t.runtime === "managed-local" ? "ok" : "bad"}">${esc(t.runtime || "?")}</span></td>` +
-        `<td class="mono">${esc(t.reason || "")}</td><td class="hint">${esc(t.hint || "")}</td></tr>`
-    )
-    .join("");
-  const errors = (rep.errors || []).map((e) => `<div class="mono err">${esc(e)}</div>`).join("");
-  box.innerHTML =
-    `<div class="report-head"><span class="pill ${cls}">${esc(label)}</span> ${esc(rep.headline || "")}</div>` +
-    (checks ? `<ol class="steps">${checks}</ol>` : "") +
-    (turns
-      ? `<div class="hint">最近几轮对话实际走的路（managed-local = 本地 Bot 回路；connect = 回落云端，Bot 额度没用上）：</div>` +
-        `<table class="turns"><thead><tr><th>时间</th><th>动作</th><th>路径</th><th>原因</th><th>说明</th></tr></thead><tbody>${turns}</tbody></table>`
-      : "") +
-    (errors ? `<div class="hint">最近错误：</div>${errors}` : "") +
-    (rep.log ? `<div class="hint mono">日志：${esc(rep.log)}</div>` : "") +
-    (rep.detail ? `<div class="hint">${esc(rep.detail)}</div>` : "");
-  box.hidden = false;
-}
-
-async function refreshPatch() {
-  const pill = $("patchPill");
-  const info = $("patchInfo");
-  pill.className = "pill idle";
-  pill.textContent = "检测中…";
-  const res = await api().patch_status();
-  if (!res || !res.ok) {
-    pill.className = "pill bad";
-    pill.textContent = "未检测到 Cursor";
-    info.textContent = (res && res.error) || "未找到本机 Cursor 安装。";
-    $("patchRules").hidden = true;
-    return;
-  }
-  const versionMismatch = res.testedVersion === false && !res.streamMode && !res.installed;
-  const s = res.summary || {};
-  if (res.streamMode && s.verdict !== "partial") {
-    pill.className = "pill ok";
-    pill.textContent = "Stream 模式";
-  } else if (versionMismatch) {
-    pill.className = "pill bad";
-    pill.textContent = "版本不符";
-  } else if (res.installed) {
-    pill.className = "pill warn";
-    pill.textContent = s.verdict === "partial" ? "补丁不完整" : "补丁需升级";
-  } else {
-    pill.className = "pill idle";
-    pill.textContent = "未打补丁";
-  }
-  if (versionMismatch) {
-    // 版本不对：打补丁不会生效。醒目提示 + 直接给对应平台的下载按钮。
-    const req = res.requiredVersion || "3.18.9";
-    const dl = res.downloadUrl || "";
-    const dlSys = res.downloadUrlSystem || "";
-    info.innerHTML =
-      `⚠ 已测试版本为 ${req}：当前 ${res.version || "?"} 不在列表内，插件仍会尝试，但锚点不全会拒绝写入。 ` +
-      (dl ? `<button class="btn tiny primary" id="btnDlCursor">下载 Cursor ${req}</button> ` : "") +
-      (dlSys ? `<button class="btn tiny" id="btnDlCursorSys">管理员版</button>` : "");
-    const b1 = document.getElementById("btnDlCursor");
-    if (b1) b1.onclick = () => downloadCursor(dl);
-    const b2 = document.getElementById("btnDlCursorSys");
-    if (b2) b2.onclick = () => downloadCursor(dlSys);
-  } else {
-    let streamHint = "";
-    if (res.streamMode && s.verdict !== "partial") streamHint = "Stream 回路已启用（后台任务完成 / 子代理也走本地 Bot 回路）。点「验证生效」可从 Cursor 日志确认实际走的路";
-    else if (res.installed && s.verdict === "partial") streamHint = "⚠ 补丁只生效了一部分，下面逐条看哪条没打上";
-    else if (res.streamCapable && res.installed) {
-      // 旧版补丁：后台任务完成、子代理仍会回落云端被 401，表现为反复弹 "unexpected error"。
-      streamHint = "⚠ 已打的是旧版补丁，请重新点「打补丁」升级（修复：每次后台任务结束弹 unexpected error、子代理用不了 Bot）。会自动重启 Cursor";
-    } else if (res.streamCapable) streamHint = "可打 Stream 补丁，尚未启用";
-    info.textContent = `Cursor ${res.version || "?"} · ${res.path || ""} · ${streamHint}`;
-  }
-  renderRules(res);
-}
-
-async function doVerifyRuntime() {
-  toast("正在读取 Cursor 的 agent-host 日志…");
-  try {
-    const rep = await api().verify_runtime();
-    renderRuntimeReport(rep);
-    toast(rep && rep.headline ? rep.headline.slice(0, 80) : "已读取日志");
-  } catch (e) {
-    toast("验证失败：" + String(e));
-  }
-}
-
-async function downloadCursor(url) {
-  if (!url) return;
-  toast("正在打开下载页…");
-  try {
-    const r = await api().open_url(url);
-    if (!r || !r.ok) toast("打开失败，请手动复制链接：" + url);
-  } catch (e) {
-    toast("打开失败，请手动复制链接：" + url);
-  }
-}
-
-async function doPatch() {
-  // 版本不对就先拦一下：3.18.9 之外没有 agent-host 锚点，打了也白打。
-  try {
-    const st = await api().patch_status();
-    if (st && st.ok && st.testedVersion === false && !st.streamMode) {
-      const req = st.requiredVersion || "3.18.9 / 3.18.25 / 3.19.13";
-      const dl = st.downloadUrl || "";
-      const msg =
-        `当前 Cursor ${st.version || ""} 不在已测试列表（${req}）：\n` +
-        `插件仍会尝试打补丁，但锚点不全时会拒绝写入。\n\n` +
-        `建议先安装已测试版本（并关闭自动更新）：\n${dl}\n\n仍要继续尝试吗？`;
-      if (window.confirm(msg) === false) {
-        toast("已取消：请先安装 Cursor " + req + " 再打补丁");
-        return;
-      }
-    }
-  } catch (e) {}
-  $("btnPatch").disabled = true;
-  $("btnRestore").disabled = true;
-  toast("正在打补丁：关闭 Cursor → 写入 → 校验 → 重启，请稍候…");
-  const res = await api().apply_patch();
-  $("btnPatch").disabled = false;
-  $("btnRestore").disabled = false;
-  renderInstallReport(res);
-  if (res && res.verdict === "full") toast("补丁全部生效，Cursor 已重启");
-  else if (res && res.verdict === "partial") toast("补丁部分生效 / 有待确认项，看下方报告");
-  else toast("打补丁失败：" + ((res && res.headline) || (res && res.error) || "未知原因"));
-  refreshPatch();
-}
-
-async function doRestore() {
-  $("btnPatch").disabled = true;
-  $("btnRestore").disabled = true;
-  toast("正在回退，随后会自动重启 Cursor…");
-  const res = await api().restore_patch();
-  $("btnPatch").disabled = false;
-  $("btnRestore").disabled = false;
-  $("patchReport").hidden = true;
-  toast(res && res.ok ? "已回退，Cursor 将自动重启" : "回退失败：" + ((res && res.error) || ""));
-  refreshPatch();
-}
-
-// 设置统一合并后整体写回，避免某一项覆盖掉另一项。
 async function saveSettings(patch) {
   settings = { ...settings, ...patch };
   const bridge = api();
@@ -2138,6 +2705,285 @@ async function saveSettings(patch) {
       await bridge.set_settings(settings);
     } catch (e) {}
   }
+}
+
+function currentMainTab() {
+  return settings.mainTab === "agents" ? "agents" : "accounts";
+}
+
+function setMainTab(name, persist) {
+  const tab = name === "agents" ? "agents" : "accounts";
+  const accountsOn = tab === "accounts";
+  const tabAccounts = $("tabAccounts");
+  const tabAgents = $("tabAgents");
+  const paneAccounts = $("paneAccounts");
+  const paneAgents = $("paneAgents");
+  if (tabAccounts) {
+    tabAccounts.classList.toggle("active", accountsOn);
+    tabAccounts.setAttribute("aria-selected", accountsOn ? "true" : "false");
+  }
+  if (tabAgents) {
+    tabAgents.classList.toggle("active", !accountsOn);
+    tabAgents.setAttribute("aria-selected", accountsOn ? "false" : "true");
+  }
+  if (paneAccounts) paneAccounts.hidden = !accountsOn;
+  if (paneAgents) paneAgents.hidden = accountsOn;
+  if (persist !== false && settings.mainTab !== tab) saveSettings({ mainTab: tab });
+}
+
+function onMainTabClick(e) {
+  const btn = e.target.closest("[data-tab]");
+  if (!btn) return;
+  setMainTab(btn.getAttribute("data-tab"));
+}
+
+function fmtAgentTime(iso) {
+  const ms = toMs(iso);
+  return fmtTs(ms) || String(iso || "—");
+}
+
+function renderApiKeys() {
+  const pill = $("apiKeyCountPill");
+  if (pill) pill.textContent = `${apiKeys.length} 把密钥`;
+  const empty = $("apiKeyEmpty");
+  const list = $("apiKeyList");
+  if (!list) return;
+  if (empty) empty.hidden = apiKeys.length > 0;
+  list.innerHTML = apiKeys
+    .map((k) => {
+      const id = esc(k.id);
+      const email = esc(k.userEmail || "（未返回邮箱）");
+      const name = esc(k.apiKeyName || "未命名密钥");
+      const uid = k.userId != null && k.userId !== "" ? esc(String(k.userId)) : "—";
+      const block = agentLists[k.id] || {};
+      let body = "";
+      if (block.loading) {
+        body = `<p class="hint agent-empty">正在拉取云端 Agent…</p>`;
+      } else if (block.error) {
+        body = `<p class="agent-error">${esc(block.error)}</p>`;
+      } else if (block.agents) {
+        if (!block.agents.length) {
+          body = `<p class="hint agent-empty">没有云端 Agent</p>`;
+        } else {
+          const rows = block.agents
+            .map((a) => {
+              const aid = esc(a.id || "");
+              const st = esc(a.status || "");
+              const created = esc(fmtAgentTime(a.createdAt));
+              const nm = esc((a.name || "").replace(/\n/g, " "));
+              return (
+                `<tr><td class="mono">${aid}</td><td>${st}</td><td>${created}</td><td>${nm}</td>` +
+                `<td class="agent-act"><button type="button" class="btn tiny danger" data-act="deleteAgent" data-id="${id}" data-agent="${aid}">删除</button></td></tr>`
+              );
+            })
+            .join("");
+          body =
+            `<div class="agent-table-wrap"><table><thead><tr>` +
+            `<th>ID</th><th>STATUS</th><th>CREATED</th><th>NAME</th><th></th>` +
+            `</tr></thead><tbody>${rows}</tbody></table></div>`;
+        }
+      }
+      return (
+        `<div class="api-key-block" data-id="${id}">` +
+        `<div class="api-key-head">` +
+        `<div><div class="mail">${email}</div>` +
+        `<div class="uid">${name} · userId ${uid}</div></div>` +
+        `<div class="act-wrap">` +
+        `<button type="button" class="btn tiny" data-act="listAgents" data-id="${id}">列出 Agent</button>` +
+        `<button type="button" class="btn tiny danger" data-act="cleanAgents" data-id="${id}">一键清理</button>` +
+        `<button type="button" class="btn tiny" data-act="removeApiKey" data-id="${id}">移除密钥</button>` +
+        `</div></div>${body}</div>`
+      );
+    })
+    .join("");
+}
+
+async function loadApiKeys() {
+  const bridge = api();
+  if (!bridge || !bridge.list_api_keys) return;
+  try {
+    apiKeys = (await bridge.list_api_keys()) || [];
+  } catch (e) {
+    apiKeys = [];
+  }
+  renderApiKeys();
+  await restoreLastApiKeyInput();
+}
+
+let lastApiKeySaveTimer = 0;
+
+async function restoreLastApiKeyInput() {
+  const ta = $("apiKeyInput");
+  if (!ta || ta.value.trim()) return;
+  const bridge = api();
+  if (!bridge || !bridge.get_last_api_key_input) return;
+  try {
+    const text = await bridge.get_last_api_key_input();
+    if (typeof text === "string" && text) ta.value = text;
+  } catch (e) {}
+}
+
+function scheduleSaveLastApiKeyInput() {
+  const ta = $("apiKeyInput");
+  const text = (ta && ta.value) || "";
+  clearTimeout(lastApiKeySaveTimer);
+  lastApiKeySaveTimer = setTimeout(() => {
+    saveLastApiKeyInput(text);
+  }, 400);
+}
+
+async function saveLastApiKeyInput(text) {
+  const bridge = api();
+  if (!bridge || !bridge.set_last_api_key_input) return;
+  try {
+    await bridge.set_last_api_key_input(text || "");
+  } catch (e) {}
+}
+
+async function addApiKeys() {
+  const ta = $("apiKeyInput");
+  const text = (ta && ta.value) || "";
+  if (!text.trim()) {
+    toast("先粘贴 crsr_ API Key");
+    return;
+  }
+  const bridge = api();
+  if (!bridge || !bridge.import_api_keys) {
+    toast("当前预览不支持添加密钥");
+    return;
+  }
+  let res;
+  try {
+    res = await bridge.import_api_keys(text);
+  } catch (e) {
+    toast("添加失败：" + String(e));
+    return;
+  }
+  apiKeys = (res && res.keys) || apiKeys;
+  const added = (res && res.added) || [];
+  const failed = (res && res.failed) || [];
+  renderApiKeys();
+  const bits = [];
+  if (added.length) bits.push(`已添加 ${added.length} 把`);
+  if (failed.length) bits.push(`失败 ${failed.length}：${failed.map((f) => f.error || f.line).join("；")}`);
+  toast(bits.join("。") || "未识别到 API Key");
+}
+
+async function listCloudAgents(keyId) {
+  const bridge = api();
+  if (!bridge || !bridge.list_cloud_agents) return { ok: false, error: "接口不可用", agents: [] };
+  agentLists[keyId] = { loading: true, error: "", agents: null };
+  renderApiKeys();
+  try {
+    const res = await bridge.list_cloud_agents(keyId);
+    if (!res || !res.ok) {
+      agentLists[keyId] = { loading: false, error: (res && res.error) || "列出失败", agents: [] };
+      renderApiKeys();
+      return res || { ok: false, error: "列出失败", agents: [] };
+    }
+    agentLists[keyId] = { loading: false, error: "", agents: res.agents || [] };
+    renderApiKeys();
+    return res;
+  } catch (e) {
+    agentLists[keyId] = { loading: false, error: String(e), agents: [] };
+    renderApiKeys();
+    return { ok: false, error: String(e), agents: [] };
+  }
+}
+
+async function cleanCloudAgents(keyId) {
+  const listed = await listCloudAgents(keyId);
+  if (!listed || !listed.ok) {
+    toast("列出失败：" + ((listed && listed.error) || "未知错误"));
+    return;
+  }
+  const n = (listed.agents || []).length;
+  if (!n) {
+    toast("该密钥下没有云端 Agent");
+    return;
+  }
+  if (!window.confirm(`确定永久删除该密钥下 ${n} 个云端 Agent？此操作不可恢复。`)) return;
+  const bridge = api();
+  agentLists[keyId] = { loading: true, error: "", agents: listed.agents };
+  renderApiKeys();
+  try {
+    const out = await bridge.delete_all_cloud_agents(keyId);
+    if (!out || !out.ok) {
+      const extra = out && out.failed ? `成功 ${out.deleted || 0}，失败 ${out.failed}` : (out && out.error) || "清理失败";
+      toast("清理未完成：" + extra);
+      await listCloudAgents(keyId);
+      return;
+    }
+    agentLists[keyId] = { loading: false, error: "", agents: [] };
+    renderApiKeys();
+    toast(`已永久删除 ${out.deleted || n} 个云端 Agent`);
+  } catch (e) {
+    toast("清理失败：" + String(e));
+    await listCloudAgents(keyId);
+  }
+}
+
+async function removeApiKey(keyId) {
+  const row = apiKeys.find((k) => k.id === keyId);
+  const label = (row && (row.userEmail || row.apiKeyName)) || keyId;
+  if (!window.confirm(`确定移除密钥 ${label}？不会删除云端 Agent，只是从本机列表拿掉。`)) return;
+  try {
+    const res = await api().remove_api_key(keyId);
+    apiKeys = (res && res.keys) || [];
+    delete agentLists[keyId];
+    renderApiKeys();
+    toast(res && res.ok ? "已移除密钥" : (res && res.error) || "移除失败");
+  } catch (e) {
+    toast("移除失败：" + String(e));
+  }
+}
+
+async function deleteCloudAgent(keyId, agentId) {
+  const aid = String(agentId || "").trim();
+  if (!aid) return;
+  const block = agentLists[keyId] || {};
+  const agent = (block.agents || []).find((a) => a && a.id === aid);
+  const label = ((agent && agent.name) || aid).replace(/\n/g, " ");
+  if (!window.confirm(`确定永久删除云端 Agent「${label}」？此操作不可恢复。`)) return;
+  const bridge = api();
+  if (!bridge || !bridge.delete_cloud_agent) {
+    toast("当前预览不支持单独删除");
+    return;
+  }
+  try {
+    const out = await bridge.delete_cloud_agent(keyId, aid);
+    if (!out || !out.ok) {
+      toast("删除失败：" + ((out && out.error) || "未知错误"));
+      await listCloudAgents(keyId);
+      return;
+    }
+    const cur = agentLists[keyId];
+    if (cur && Array.isArray(cur.agents)) {
+      agentLists[keyId] = {
+        loading: false,
+        error: "",
+        agents: cur.agents.filter((a) => a && a.id !== aid),
+      };
+      renderApiKeys();
+    } else {
+      await listCloudAgents(keyId);
+    }
+    toast("已永久删除 1 个云端 Agent");
+  } catch (e) {
+    toast("删除失败：" + String(e));
+    await listCloudAgents(keyId);
+  }
+}
+
+function onApiKeyListClick(e) {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.getAttribute("data-act");
+  const id = btn.getAttribute("data-id");
+  if (act === "listAgents") listCloudAgents(id);
+  else if (act === "cleanAgents") cleanCloudAgents(id);
+  else if (act === "deleteAgent") deleteCloudAgent(id, btn.getAttribute("data-agent"));
+  else if (act === "removeApiKey") removeApiKey(id);
 }
 
 function showHelp() {
@@ -2149,69 +2995,111 @@ function hideHelp() {
   if ($("helpHide").checked) saveSettings({ hideHelp: true });
 }
 
-function setTab(name) {
-  const accounts = name === "accounts";
-  const bar = $("tabBar") || document.querySelector(".tabs");
-  if (bar) bar.dataset.active = name;
-  $("tabAccounts").classList.toggle("active", accounts);
-  $("tabPatch").classList.toggle("active", !accounts);
-  $("tabAccounts").setAttribute("aria-selected", accounts ? "true" : "false");
-  $("tabPatch").setAttribute("aria-selected", accounts ? "false" : "true");
-  $("panelAccounts").hidden = !accounts;
-  $("panelPatch").hidden = accounts;
+function showQuitConfirm() {
+  const el = $("quitMask");
+  if (el) el.hidden = false;
 }
 
-function onTabClick(e) {
-  const btn = e.target.closest("[data-tab]");
-  if (btn) setTab(btn.getAttribute("data-tab"));
+function hideQuitConfirm() {
+  const el = $("quitMask");
+  if (el) el.hidden = true;
 }
 
-async function doSetPath() {
-  const path = $("cursorPathInput").value.trim();
-  toast("正在设置 Cursor 路径…");
-  try {
-    const res = await api().set_cursor_path(path);
-    toast(res && res.ok ? (path ? "已设置路径" : "已恢复自动检测") : "设置失败：" + ((res && res.error) || "路径无效"));
-  } catch (e) {
-    toast("设置失败：" + String(e));
+function confirmQuit() {
+  hideQuitConfirm();
+  const bridge = api();
+  if (bridge && bridge.request_quit) {
+    // 不要 await，也不要 window.close()：桥回传也走 evaluate_js，
+    // 等它会卡住；WKWebView 的 window.close() 关不掉桌面窗口。
+    // Python 会置位后延迟 destroy。
+    try {
+      bridge.request_quit();
+    } catch (e) {}
+    return;
   }
-  refreshPatch();
+  window.close();
 }
+
+window.showQuitConfirm = showQuitConfirm;
 
 async function boot() {
-  document.querySelector(".tabs").addEventListener("click", onTabClick);
+  const bridge = api();
+  if (bridge && bridge.mark_ui_ready) {
+    try { await bridge.mark_ui_ready(); } catch (e) {}
+  }
   $("btnHelp").addEventListener("click", showHelp);
+  const tabBar = document.querySelector(".tab-bar");
+  if (tabBar) tabBar.addEventListener("click", onMainTabClick);
   $("btnDetectLocal").addEventListener("click", detectLocal);
   $("btnImportFile").addEventListener("click", importFiles);
   $("btnAddText").addEventListener("click", addText);
   $("btnClear").addEventListener("click", clearAll);
   $("btnRemoveSel").addEventListener("click", removeSelected);
   $("btnClaimAll").addEventListener("click", () => runBatch("claim"));
+  $("btnGuardSel").addEventListener("click", () => runGuardBatch("start"));
+  $("btnGuardStopSel").addEventListener("click", () => runGuardBatch("stop"));
   $("btnVerify").addEventListener("click", () => runBatch("verify"));
   $("btnExport").addEventListener("click", exportAllClassified);
-  $("btnPatch").addEventListener("click", doPatch);
-  $("btnRestore").addEventListener("click", doRestore);
-  $("btnPatchCheck").addEventListener("click", () => {
-    $("patchReport").hidden = true;
-    refreshPatch();
+  $("btnAddApiKey").addEventListener("click", addApiKeys);
+  $("apiKeyInput").addEventListener("input", scheduleSaveLastApiKeyInput);
+  $("apiKeyInput").addEventListener("blur", () => {
+    const ta = $("apiKeyInput");
+    saveLastApiKeyInput((ta && ta.value) || "");
   });
-  $("btnVerifyRuntime").addEventListener("click", doVerifyRuntime);
-  $("btnSetPath").addEventListener("click", doSetPath);
+  $("apiKeyList").addEventListener("click", onApiKeyListClick);
   $("rows").addEventListener("click", onTableClick);
   $("rows").addEventListener("change", onTableChange);
   $("chkAll").addEventListener("change", onSelectAll);
   $("helpOk").addEventListener("click", hideHelp);
+  $("quitCancel").addEventListener("click", hideQuitConfirm);
+  $("quitOk").addEventListener("click", confirmQuit);
+  $("quitMask").addEventListener("click", (e) => {
+    if (e.target === $("quitMask")) hideQuitConfirm();
+  });
+  $("switchConfirmCancel").addEventListener("click", hideSwitchConfirm);
+  $("switchConfirmOk").addEventListener("click", confirmSwitch);
+  $("switchConfirmMask").addEventListener("click", (e) => {
+    if (e.target === $("switchConfirmMask")) hideSwitchConfirm();
+  });
   $("sessionOk").addEventListener("click", hideSessions);
   $("sessionRefresh").addEventListener("click", () => loadSessions());
   $("sessionBrowser").addEventListener("click", () => openSessionsPage(sessionModal.id));
+  $("loginDetectCancel").addEventListener("click", hideLoginDetect);
+  $("loginDetectOk").addEventListener("click", runLoginDetect);
+  $("loginDetectMask").addEventListener("click", (e) => {
+    if (e.target === $("loginDetectMask")) hideLoginDetect();
+  });
+  $("loginDetectSec").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runLoginDetect();
+    }
+  });
   $("sessionBody").addEventListener("click", onSessionBodyClick);
+  $("sessionBody").addEventListener("change", onSessionBodyChange);
   $("guardCancel").addEventListener("click", hideGuard);
+  $("guardMask").addEventListener("click", (e) => {
+    if (e.target === $("guardMask")) hideGuard();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if ($("loginDetectMask") && !$("loginDetectMask").hidden) {
+      hideLoginDetect();
+      return;
+    }
+    if (isSwitchConfirmOpen()) {
+      hideSwitchConfirm();
+      return;
+    }
+    if (isGuardPanelOpen()) hideGuard();
+  });
   $("guardRefresh").addEventListener("click", () => loadGuardSessions());
+  $("guardDetect").addEventListener("click", openLoginDetect);
   $("guardBrowser").addEventListener("click", () => openSessionsPage(guardModal.id));
   $("guardBody").addEventListener("click", onGuardBodyClick);
   $("guardStart").addEventListener("click", startGuard);
   $("guardStop").addEventListener("click", () => guardModal.id && stopGuard(guardModal.id));
-  $("guardInterval").addEventListener("change", () => fillGuardIntervalMinutes(readGuardIntervalMinutes()));
+  $("guardInterval").addEventListener("change", () => fillGuardIntervalSeconds(readGuardIntervalSeconds()));
   $("guardBody").addEventListener("change", onGuardBodyChange);
   $("guardGlobal").addEventListener("click", openGuardFromGlobal);
   $("guardGlobal").addEventListener("keydown", (e) => {
@@ -2223,7 +3111,14 @@ async function boot() {
   $("menuClose").addEventListener("click", hideRowMenu);
   $("menuBody").addEventListener("click", onMenuClick);
   $("autoVerifyChk").addEventListener("change", (e) => saveSettings({ autoVerify: !!e.target.checked }));
-  refreshPatch();
+  const btnShowTokens = $("btnShowTokens");
+  if (btnShowTokens) {
+    btnShowTokens.addEventListener("click", () => setShowTokens(!showTokensOn()));
+  }
+  const showTokensChk = $("showTokensChk");
+  if (showTokensChk) {
+    showTokensChk.addEventListener("change", (e) => setShowTokens(!!e.target.checked));
+  }
 
   try {
     const [list, status] = await Promise.all([api().list_accounts(), api().load_status()]);
@@ -2239,9 +3134,11 @@ async function boot() {
     }
     await refreshLocalIdentity();
     render();
+    await loadApiKeys();
   } catch (e) {
     await refreshLocalIdentity();
     render();
+    await loadApiKeys();
   }
 
   // 本机设备保护跑在 Python 守护线程里；这里只是定时把状态拉过来画标签（本地调用，不联网）。
@@ -2254,6 +3151,15 @@ async function boot() {
     settings = {};
   }
   $("autoVerifyChk").checked = settings.autoVerify !== false;
+  setMainTab(currentMainTab(), false);
+  const btnShowTokensBoot = $("btnShowTokens");
+  if (btnShowTokensBoot) btnShowTokensBoot.setAttribute("aria-pressed", settings.showTokens ? "true" : "false");
+  if ($("showTokensChk")) $("showTokensChk").checked = !!settings.showTokens;
+  syncShowTokensButton();
+  if (showTokensOn()) {
+    await loadTokenViews();
+    render();
+  }
   if (!settings.hideHelp) showHelp();
 }
 

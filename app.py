@@ -1,4 +1,4 @@
-"""Sand 资格领取器：pywebview（Windows 用 Edge WebView2）+ 玻璃风 Web UI。
+"""cursor账号管理器：pywebview（Windows 用 Edge WebView2）+ 玻璃风 Web UI。
 
 - UI 在 web/ 下（HTML/CSS/JS，iOS 玻璃浅蓝风）。
 - Python 提供导入/领取能力，通过 window.pywebview.api 暴露给前端。
@@ -12,20 +12,21 @@ import os
 import socketserver
 import subprocess
 import sys
+import threading
 import time
 
 import webview
 
 import resolve
 import sand_api
-import cam_patch
 import sand_patch
-import patch_report
 import browser_login
 import device_guard
 import local_cursor
+import api_key_store
 from accounts import AccountStore
 from accounts import format_export_line
+import quit_confirm
 from sand_api import claim as claim_token
 from sand_api import get_sand_status
 from sand_api import get_status
@@ -63,24 +64,6 @@ def install_quiet_local_http() -> None:
 
     socketserver.BaseServer.handle_error = handle_error
     _QUIET_HTTP_INSTALLED = True
-
-# 补丁锚定的 Cursor 版本（与 cursor-account-manager sandPatcher.TESTED_CURSOR_VERSIONS 一致）。
-REQUIRED_CURSOR_VERSION = cam_patch.required_version_label()
-_CURSOR_SHA = "2ba48ff3f7514cc4643c52ca9f7b3173d9b66137"
-_CURSOR_DL_BASE = f"https://downloads.cursor.com/production/{_CURSOR_SHA}"
-CURSOR_DOWNLOADS = {
-    "windows": _CURSOR_DL_BASE + "/win32/x64/user-setup/CursorUserSetup-x64-3.18.9.exe",
-    "windows_system": _CURSOR_DL_BASE + "/win32/x64/system-setup/CursorSetup-x64-3.18.9.exe",
-    "mac": _CURSOR_DL_BASE + "/darwin/universal/Cursor-darwin-universal.dmg",
-}
-
-
-def _os_key() -> str:
-    if sys.platform == "win32":
-        return "windows"
-    if sys.platform == "darwin":
-        return "mac"
-    return "linux"
 
 
 def _read_json(name: str, default):
@@ -186,6 +169,13 @@ class Api:
             fetch_sessions=browser_login.fetch_sessions_smart,
             revoke_session=browser_login.revoke_session_smart,
         )
+        self._keys = api_key_store.ApiKeyStore()
+        self._quit_confirmed = False
+        self._ui_ready = False
+
+    def mark_ui_ready(self) -> bool:
+        self._ui_ready = True
+        return True
 
     def _auth_of(self, account_id: str):
         """取账号的 (user_id, jwt, claims, item, error)；账号不存在或 token 解析失败时 error 非空。"""
@@ -230,11 +220,89 @@ class Api:
         email = acct.get("email")
         if account_id and email and "@" in email:
             self._store.set_label(account_id, email)
+        refresh_recorded = False
+        if account_id and acct.get("refresh_token"):
+            refresh_recorded = self._store.set_refresh_credentials(
+                account_id, acct["refresh_token"], source="local_detect"
+            )
         return {
             "ok": True,
             "id": account_id,
             "email": email,
             "membership": acct.get("membership"),
+            "refreshRecorded": refresh_recorded,
+            "accounts": self._store.list(),
+        }
+
+    def probe_refresh_one(self, account_id: str) -> dict:
+        """探测并记录账号的 refresh_token（优先读本机 Cursor，其次已存/号池导入）。"""
+        item = self._store.get(account_id)
+        if not item:
+            return {"ok": False, "error": "账号不存在"}
+        source = None
+        refresh = None
+        client_id = item.get("clientId")
+        acct = local_cursor.read_local_account()
+        if acct and acct.get("refresh_token") and acct.get("token"):
+            try:
+                local_uid, _, _ = parse_token(acct["token"])
+                if local_uid == account_id:
+                    refresh = acct["refresh_token"]
+                    source = "local"
+            except Exception:
+                pass
+        if not refresh:
+            refresh = item.get("refreshToken")
+            if refresh:
+                source = "stored"
+        if not refresh:
+            return {
+                "ok": False,
+                "error": "未能探测到 refresh_token（本机未登录该号，且列表里也没有已记录的 refresh）",
+            }
+        same_as_access = False
+        try:
+            _uid, access_jwt, _ = parse_token(item["token"])
+            _uid2, refresh_jwt, _ = parse_token(refresh)
+            same_as_access = access_jwt == refresh_jwt
+        except Exception:
+            pass
+        self._store.set_refresh_credentials(account_id, refresh, client_id=client_id, source=source or "probe")
+        return {
+            "ok": True,
+            "source": source,
+            "sameAsAccess": same_as_access,
+            "hasClientId": bool(client_id),
+            "accounts": self._store.list(),
+        }
+
+    def refresh_login_one(self, account_id: str) -> dict:
+        """用已记录的 refresh_token 换取新的 access_token，并写回账号表。"""
+        item = self._store.get(account_id)
+        if not item:
+            return {"ok": False, "error": "账号不存在"}
+        refresh = item.get("refreshToken")
+        client_id = item.get("clientId")
+        if not refresh:
+            probe = self.probe_refresh_one(account_id)
+            if not probe.get("ok"):
+                return probe
+            item = self._store.get(account_id) or item
+            refresh = item.get("refreshToken")
+            client_id = item.get("clientId")
+        if not refresh:
+            return {"ok": False, "error": "缺少 refresh_token，请先「探测 Refresh」或导入号池整行"}
+        result = sand_api.refresh_login_tokens(refresh, client_id)
+        if not result.get("ok"):
+            return result
+        access = result["accessToken"]
+        new_refresh = result.get("refreshToken") or refresh
+        new_client = result.get("clientId") or client_id
+        self._store.update_login_tokens(account_id, access, refresh_token=new_refresh, client_id=new_client)
+        return {
+            "ok": True,
+            "tokenType": result.get("tokenType"),
+            "exp": result.get("exp"),
             "accounts": self._store.list(),
         }
 
@@ -252,6 +320,13 @@ class Api:
 
     def list_accounts(self) -> list:
         return self._store.list()
+
+    def list_account_tokens(self) -> dict:
+        """显示 Token 开关打开后拉取：不含在 list_accounts 里，避免默认列表带出凭据。"""
+        try:
+            return {"ok": True, "tokens": self._store.token_views()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "tokens": {}}
 
     def remove_account(self, account_id: str) -> list:
         self._store.remove(account_id)
@@ -277,6 +352,31 @@ class Api:
                 self._guard.forget(account_id)
         self._store.clear()
         return self._store.list()
+
+    def list_api_keys(self) -> list:
+        return self._keys.list()
+
+    def get_last_api_key_input(self) -> str:
+        return self._keys.draft_text()
+
+    def set_last_api_key_input(self, text: str) -> str:
+        return self._keys.set_last_input(text or "")
+
+    def import_api_keys(self, text: str) -> dict:
+        return self._keys.import_keys(text or "")
+
+    def remove_api_key(self, key_id: str) -> dict:
+        ok = self._keys.remove(key_id)
+        return {"ok": ok, "keys": self._keys.list(), "error": "" if ok else "密钥不存在"}
+
+    def list_cloud_agents(self, key_id: str) -> dict:
+        return self._keys.list_agents(key_id)
+
+    def delete_all_cloud_agents(self, key_id: str) -> dict:
+        return self._keys.delete_all_agents(key_id)
+
+    def delete_cloud_agent(self, key_id: str, agent_id: str) -> dict:
+        return self._keys.delete_agent(key_id, agent_id)
 
     def export_accounts(self, payload) -> dict:
         """导出 txt：按分类分段写入，账号行仍是 邮箱----user_id::jwt（保持可原样粘回导入），一个号只出现一次。
@@ -461,19 +561,75 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": str(exc), "status": 0}
 
+    def revoke_sessions(self, account_id: str, items=None) -> dict:
+        """批量踢下线。items 为 sessionId 字符串列表，或 {sessionId, type} 字典列表。一项失败不中断其余。"""
+        user_id, jwt, _claims, _item, error = self._auth_of(account_id)
+        if error:
+            return {
+                "ok": False,
+                "error": error,
+                "kicked": [],
+                "failed": [],
+                "kickedCount": 0,
+                "failedCount": 0,
+            }
+
+        def _one(session_id, session_type):
+            return browser_login.revoke_session_smart(user_id, jwt, session_id, session_type)
+
+        return sand_api.revoke_many(items, _one)
+
     # ---- 本机设备保护：按设定间隔检测，自动下线未保留设备 ----
 
-    def device_guard_start(self, account_id: str, keep_session_ids, interval_minutes=1) -> dict:
-        """开启保护：keep_session_ids 是要保留的 sessionId 列表（不能为空）。interval_minutes 为检测间隔（1–120 分钟）。"""
+    def device_guard_start(self, account_id: str, keep_session_ids, interval_seconds=30) -> dict:
+        """开启保护：keep_session_ids 是要保留的 sessionId 列表（不能为空）。interval_seconds 为检测间隔（5–3600 秒）。"""
         user_id, jwt, _claims, _item, error = self._auth_of(account_id)
         if error:
             return {"ok": False, "error": error}
         try:
             return self._guard.start(
-                account_id, user_id, jwt, keep_session_ids, interval_minutes=interval_minutes
+                account_id, user_id, jwt, keep_session_ids, interval_seconds=interval_seconds
             )
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def device_guard_start_auto(self, account_id: str, interval_seconds=30) -> dict:
+        """批量保护：自动生成保留名单后开启。已在跑则跳过，不重开。"""
+        if self._guard.is_running(account_id):
+            st = (self._guard.status() or {}).get(str(account_id) or "") or {}
+            return {"ok": True, "skipped": True, "reason": "already", "status": st}
+        user_id, jwt, _claims, _item, error = self._auth_of(account_id)
+        if error:
+            return {"ok": False, "error": error}
+        try:
+            block = browser_login.fetch_sessions_smart(user_id, jwt)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if block.get("sessionError"):
+            return {
+                "ok": False,
+                "error": block.get("sessionError") or "读取设备失败",
+                "waf": bool(block.get("sessionWaf")),
+            }
+        local = self.local_identity()
+        is_local = bool(local.get("ok") and local.get("userId") == account_id)
+        keep = sand_api.pick_keep_session_ids(
+            block.get("sessions") or [],
+            self._guard.saved_keep_ids(account_id),
+            is_local,
+        )
+        if not keep:
+            return {"ok": False, "error": "当前没有登录设备，无法开启保护"}
+        try:
+            res = self._guard.start(
+                account_id, user_id, jwt, keep, interval_seconds=interval_seconds
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if res.get("ok"):
+            res["keepCount"] = len(keep)
+            res["skipped"] = False
+        return res
 
     def device_guard_stop(self, account_id: str) -> dict:
         try:
@@ -522,7 +678,7 @@ class Api:
             }
         # 网站会话票（type=web）直接写进客户端对话层不认（能显示账号、一发消息就要重登）。
         # 先按官方深度登录换成客户端 session 票；换不到再回退原样写（至少不比以前差）。
-        refresh_jwt = None
+        refresh_jwt = item.get("refreshToken") or None
         exchanged = False
         if str(claims.get("type") or "").lower() == "web":
             try:
@@ -539,6 +695,8 @@ class Api:
                     "error": "这是网站会话（type=web），换取客户端登录票失败："
                     "多为该 token 已过期/被限流或网络问题。可重试，或用「网页领取」在浏览器里用。",
                 }
+        elif not refresh_jwt:
+            refresh_jwt = jwt
         try:
             layout = sand_patch.resolve_cursor_layout()
         except sand_patch.SandToolError as exc:
@@ -581,107 +739,18 @@ class Api:
         _write_json("settings.json", data or {})
         return True
 
-    # ---- 本机 Cursor Sand 补丁（cursor-account-manager 的 sandPatcher / sandStream）----
+    def request_quit(self) -> dict:
+        """关闭确认框点了「关闭应用」：置位并延迟 destroy。
 
-    def set_cursor_path(self, path: str) -> dict:
-        """设置自定义 Cursor 路径（传空或 auto 恢复自动检测），随后返回最新补丁状态。"""
-        value = (path or "").strip() or "auto"
-        try:
-            sand_patch.save_cursor_path(value)
-        except sand_patch.SandToolError as exc:
-            return {"ok": False, "error": str(exc)}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-        return self.patch_status()
-
-    def patch_status(self) -> dict:
-        try:
-            layout = sand_patch.resolve_cursor_layout()
-        except sand_patch.SandToolError as exc:
-            return {"ok": False, "error": str(exc)}
-        try:
-            st = sand_patch.inspect_status(layout)
-            os_key = _os_key()
-            result = {
-                "ok": True,
-                "version": layout.version,
-                "path": str(layout.install_root),
-                "installed": bool(st.installed),
-                "streamMode": bool(st.stream_mode_installed),
-                "streamCapable": bool(st.stream_capable),
-                "client": st.client_markers + st.legacy_client_markers,
-                "eligibility": st.eligibility_markers + st.legacy_eligibility_markers,
-                "requiredVersion": REQUIRED_CURSOR_VERSION,
-                "testedVersion": bool(st.tested_version),
-                "requiredVersions": list(cam_patch.TESTED_CURSOR_VERSIONS),
-                "os": os_key,
-                "downloadUrl": CURSOR_DOWNLOADS.get(os_key, CURSOR_DOWNLOADS["windows"]),
-                "downloadUrlSystem": CURSOR_DOWNLOADS["windows_system"] if os_key == "windows" else "",
-            }
-            # 逐条规则 + 运行中的 Cursor 是否就是这一份（群友「显示成功其实没成功」的两大来源）。
-            try:
-                result.update(patch_report.status_report(layout))
-            except Exception as exc:
-                result["rulesError"] = str(exc)
-            return result
-        except sand_patch.SandToolError as exc:
-            return {"ok": False, "error": str(exc), "version": layout.version, "path": str(layout.install_root)}
-
-    def open_url(self, url: str) -> dict:
-        """在系统默认浏览器打开链接（用于「下载对应版本 Cursor」按钮）。"""
-        try:
-            import webbrowser
-            if not (url or "").startswith(("http://", "https://")):
-                return {"ok": False, "error": "非法链接"}
-            webbrowser.open(url)
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-
-    def apply_patch(self) -> dict:
-        """打补丁并返回逐步 / 逐规则报告（见 patch_report.install_with_report）。"""
-        try:
-            layout = sand_patch.resolve_cursor_layout()
-        except sand_patch.SandToolError as exc:
-            return {
-                "ok": False,
-                "verdict": "failed",
-                "headline": f"定位 Cursor 失败：{exc}",
-                "steps": [{"key": "locate", "title": "定位 Cursor", "status": "fail", "detail": str(exc),
-                           "fix": "在补丁面板「设置路径」里填 Cursor.exe / 安装目录的路径"}],
-                "rulesBefore": [], "rulesAfter": [],
-            }
-        try:
-            report = patch_report.install_with_report(layout)
-        except PermissionError as exc:
-            report = {"ok": False, "verdict": "failed", "headline": f"没有写入权限：{exc}",
-                      "steps": [{"key": "write", "title": "写入补丁文件", "status": "fail", "detail": str(exc),
-                                 "fix": "右键「以管理员身份运行」本工具后重试"}], "rulesBefore": [], "rulesAfter": []}
-        except Exception as exc:
-            report = {"ok": False, "verdict": "failed", "headline": f"{type(exc).__name__}: {exc}",
-                      "steps": [{"key": "unexpected", "title": "未预期错误", "status": "fail", "detail": str(exc),
-                                 "fix": "把这段文字发给群主"}], "rulesBefore": [], "rulesAfter": []}
-        report["error"] = "" if report.get("ok") else report.get("headline", "")
-        return report
-
-    def verify_runtime(self) -> dict:
-        """读 Cursor 的 agent-host 日志，判断补丁是否真的在跑（本地回路 / 每轮走的路 / 401）。"""
-        try:
-            return patch_report.runtime_report()
-        except Exception as exc:
-            return {"ok": False, "verdict": "no-log", "headline": f"读取日志失败：{exc}", "turns": [], "errors": [], "checks": []}
-
-    def restore_patch(self) -> dict:
-        try:
-            layout = sand_patch.resolve_cursor_layout()
-            sand_patch.uninstall(layout)
-            return {"ok": True}
-        except sand_patch.SandToolError as exc:
-            return {"ok": False, "error": str(exc)}
-        except PermissionError as exc:
-            return {"ok": False, "error": f"没有写入权限，请用管理员身份运行本工具：{exc}"}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        不能在这里同步 destroy()：JS 桥还要用 evaluate_js 把本次 RPC 回传给前端。
+        也不能指望前端 window.close()：WKWebView 关不掉 NSWindow。
+        """
+        win = self._window
+        quit_confirm.confirm_and_destroy(
+            lambda: setattr(self, "_quit_confirmed", True),
+            None if win is None else win.destroy,
+        )
+        return {"ok": True}
 
 
 def main() -> None:
@@ -689,15 +758,34 @@ def main() -> None:
     install_quiet_local_http()
     api = Api()
     window = webview.create_window(
-        "Sand 资格领取器",
+        "cursor账号管理器",
         resource_path(os.path.join("web", "index.html")),
         js_api=api,
-        width=1220,
-        height=800,
-        min_size=(960, 640),
+        width=1440,
+        height=840,
+        min_size=(1180, 680),
         background_color="#EAF2FF",
     )
     api._window = window
+
+    def on_closing():
+        action = quit_confirm.closing_action(bool(api._quit_confirmed), bool(api._ui_ready))
+        if quit_confirm.cancels_close(action):
+            threading.Thread(target=_show_quit_modal, name="quit-confirm", daemon=True).start()
+            return False
+        return True
+
+    def _show_quit_modal():
+        try:
+            window.evaluate_js("window.showQuitConfirm()")
+        except Exception:
+            api._quit_confirmed = True
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+    window.events.closing += on_closing
     webview.start()
     # 窗口关闭后叫停所有保护线程并把「运行中」落成 False：下次打开只回填名单，不自动踢人。
     api._guard.stop_all(wait=True, timeout=3.0)

@@ -33,6 +33,9 @@ LABELED_RE = re.compile(
     r"(user_[A-Za-z0-9]+(?:::|%3A%3A)eyJ[A-Za-z0-9_.\-]+|eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,})"
 )
 
+# 号池整行：邮箱----邮箱密码----client_id----refresh_token----cursor密码----access_token
+POOL_LINE_FIELDS = 6
+
 # 字段名 -> 优先级：access_token / ws token 才是调 API 能用的；refresh_token 最低，绝不能覆盖 access。
 _TOKEN_PRIORITY = {
     "access_token": 5,
@@ -91,14 +94,41 @@ def _extract_from_obj(obj, out: list) -> None:
             _extract_from_obj(item, out)
 
 
-def format_export_line(item: dict) -> str:
-    """导出一行：邮箱----user_id::jwt（无邮箱则只出 user_id::jwt）。可原样粘回导入。"""
+def format_worksession(item: dict) -> str:
+    """WorkosCursorSessionToken：user_id::jwt。"""
     raw = (item or {}).get("token") or ""
     user_id, jwt, _claims = parse_token(raw)
+    return f"{user_id}::{jwt}"
+
+
+def format_export_line(item: dict) -> str:
+    """导出一行：邮箱----user_id::jwt（无邮箱则只出 user_id::jwt）。可原样粘回导入。"""
     label = (item or {}).get("label") or ""
     email = label if "@" in label else ""
-    body = f"{user_id}::{jwt}"
+    body = format_worksession(item)
     return f"{email}----{body}" if email else body
+
+
+def pool_lines_from_text(text: str) -> list[dict]:
+    """从号池整行文本解析 refresh/client_id/access（6 段 ---- 分隔）。"""
+    out: list[dict] = []
+    for line in (text or "").splitlines():
+        parts = line.strip().split("----")
+        if len(parts) < POOL_LINE_FIELDS:
+            continue
+        access = parts[5].strip()
+        refresh = parts[3].strip()
+        if not (access.startswith("eyJ") and refresh.startswith("eyJ")):
+            continue
+        out.append(
+            {
+                "email": parts[0].strip(),
+                "clientId": parts[2].strip(),
+                "refreshToken": refresh,
+                "accessToken": access,
+            }
+        )
+    return out
 
 
 def labels_from_text(text: str) -> dict:
@@ -181,6 +211,10 @@ class AccountStore:
                 "tokenType": token_type,
                 # 旧数据没有导入时间就保持 None（UI 显示「—」），不伪造。
                 "addedAt": added_at if isinstance(added_at, (int, float)) else None,
+                "refreshToken": it.get("refreshToken"),
+                "clientId": it.get("clientId"),
+                "refreshRecordedAt": it.get("refreshRecordedAt"),
+                "refreshSource": it.get("refreshSource"),
             }
 
     def _save(self) -> None:
@@ -218,7 +252,7 @@ class AccountStore:
             exp = claims.get("exp")
             if not isinstance(exp, (int, float)):
                 exp = existing.get("exp") if existing else None
-            self._items[user_id] = {
+            new_item = {
                 "id": user_id,
                 "label": label,
                 "token": token.strip(),
@@ -228,6 +262,11 @@ class AccountStore:
                 # 导入时间只在首次加入时记录；重复导入/换 token 不改，保留「什么时候进的列表」。
                 "addedAt": (existing.get("addedAt") if existing else None) or int(time.time()),
             }
+            if existing:
+                for key in ("refreshToken", "clientId", "refreshRecordedAt", "refreshSource"):
+                    if existing.get(key):
+                        new_item[key] = existing[key]
+            self._items[user_id] = new_item
         elif existing is not None and label_hint and "@" not in (existing.get("label") or ""):
             existing["label"] = label_hint
         return self._items[user_id]
@@ -247,12 +286,29 @@ class AccountStore:
 
     def add_text(self, text: str) -> list:
         stripped = (text or "").strip()
+        pool_rows = pool_lines_from_text(text)
         # 粘贴的是 JSON 时先按字段名解析（才能用优先级挑 access_token）；否则走正则。
         if stripped[:1] in "{[":
             pairs = tokens_from_json_text(text) or tokens_from_text(text)
         else:
             pairs = tokens_from_text(text) or tokens_from_json_text(text)
-        return self._ingest(pairs, labels_from_text(text))
+        labels = labels_from_text(text)
+        touched: dict[str, dict] = {}
+        with self._lock:
+            for prio, token in pairs:
+                item = self._add_token(token, prio, labels.get(token))
+                if item:
+                    touched[item["id"]] = item
+            for row in pool_rows:
+                item = self._add_token(row["accessToken"], 5, row.get("email"))
+                if item:
+                    self._apply_refresh_meta(
+                        item, row["refreshToken"], row.get("clientId"), "pool_import"
+                    )
+                    touched[item["id"]] = item
+            if touched:
+                self._save()
+        return [{"id": v["id"], "label": v["label"]} for v in touched.values()]
 
     def add_json_files(self, paths: list) -> list:
         pairs: list = []
@@ -269,6 +325,68 @@ class AccountStore:
 
     # ---- 读取 / 修改 ----
 
+    def _apply_refresh_meta(
+        self,
+        item: dict,
+        refresh_token: str,
+        client_id: str | None = None,
+        source: str = "probe",
+    ) -> None:
+        rt = (refresh_token or "").strip()
+        if not rt:
+            return
+        item["refreshToken"] = rt
+        item["refreshRecordedAt"] = int(time.time())
+        item["refreshSource"] = source
+        if client_id:
+            item["clientId"] = client_id.strip()
+
+    def set_refresh_credentials(
+        self,
+        account_id: str,
+        refresh_token: str,
+        client_id: str | None = None,
+        source: str = "probe",
+    ) -> bool:
+        with self._lock:
+            item = self._items.get(account_id)
+            if not item:
+                return False
+            self._apply_refresh_meta(item, refresh_token, client_id, source)
+            self._save()
+            return True
+
+    def update_login_tokens(
+        self,
+        account_id: str,
+        access_token: str,
+        refresh_token: str | None = None,
+        client_id: str | None = None,
+    ) -> bool:
+        with self._lock:
+            item = self._items.get(account_id)
+            if not item:
+                return False
+            try:
+                _uid, _jwt, claims = parse_token(access_token)
+                exp = claims.get("exp")
+                token_type = claims.get("type")
+            except Exception:
+                exp = None
+                token_type = None
+            item["token"] = access_token.strip()
+            item["_prio"] = 5
+            if isinstance(exp, (int, float)):
+                item["exp"] = exp
+            if token_type:
+                item["tokenType"] = token_type
+            if refresh_token:
+                self._apply_refresh_meta(item, refresh_token, client_id, "oauth_refresh")
+            elif client_id:
+                item["clientId"] = client_id.strip()
+            self._save()
+            return True
+
     def set_label(self, account_id: str, label: str) -> None:
         with self._lock:
             item = self._items.get(account_id)
@@ -284,9 +402,31 @@ class AccountStore:
                 "exp": v.get("exp"),
                 "tokenType": v.get("tokenType"),
                 "addedAt": v.get("addedAt"),
+                "hasRefresh": bool(v.get("refreshToken")),
+                "refreshRecordedAt": v.get("refreshRecordedAt"),
+                "hasClientId": bool(v.get("clientId")),
             }
             for v in self._items.values()
         ]
+
+    def token_views(self) -> dict:
+        """仅在 UI「显示 Token」打开时调用：id -> {worksessionToken, refreshToken}。"""
+        with self._lock:
+            items = list(self._items.values())
+        out: dict = {}
+        for v in items:
+            uid = v.get("id")
+            if not uid:
+                continue
+            try:
+                worksession = format_worksession(v)
+            except Exception:
+                worksession = (v.get("token") or "").strip()
+            out[uid] = {
+                "worksessionToken": worksession,
+                "refreshToken": (v.get("refreshToken") or "").strip(),
+            }
+        return out
 
     def get(self, account_id: str):
         return self._items.get(account_id)

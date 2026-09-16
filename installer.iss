@@ -1,4 +1,4 @@
-; Sand 资格领取器 安装包脚本（Inno Setup 6）
+; cursor账号管理器 安装包脚本（Inno Setup 6）
 ; 版本与源 exe 名由 build.bat 通过 /DAppVer /DExeName 传入；单独跑 ISCC 时用下面默认值。
 #ifndef AppVer
 #define AppVer "1.2.1"
@@ -8,11 +8,11 @@
 #endif
 
 [Setup]
-AppName=Sand 资格领取器
+AppName=cursor账号管理器
 AppVersion={#AppVer}
-AppPublisher=SandClaimer
+AppPublisher=夜雨微寒
 DefaultDirName={autopf}\SandClaimer
-DefaultGroupName=Sand 资格领取器
+DefaultGroupName=cursor账号管理器
 DisableProgramGroupPage=yes
 OutputDir=installer
 OutputBaseFilename=SandClaimer-Setup-{#AppVer}
@@ -34,9 +34,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "nuitka-out\{#ExeName}"; DestDir: "{app}"; DestName: "SandClaimer.exe"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Sand 资格领取器"; Filename: "{app}\SandClaimer.exe"
-Name: "{group}\{cm:UninstallProgram,Sand 资格领取器}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Sand 资格领取器"; Filename: "{app}\SandClaimer.exe"; Tasks: desktopicon
+Name: "{group}\cursor账号管理器"; Filename: "{app}\SandClaimer.exe"
+Name: "{group}\{cm:UninstallProgram,cursor账号管理器}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\cursor账号管理器"; Filename: "{app}\SandClaimer.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\SandClaimer.exe"; Description: "{cm:LaunchProgram,Sand 资格领取器}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\SandClaimer.exe"; Description: "{cm:LaunchProgram,cursor账号管理器}"; Flags: nowait postinstall skipifsilent

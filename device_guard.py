@@ -2,7 +2,7 @@
 
 用法（app.py）：
     guard = DeviceGuardManager(os.path.join(_STATE_DIR, "device_guard.json"))
-    guard.start(account_id, user_id, jwt, keep_ids, interval_minutes=1)  # 每账号一轮；间隔按分钟
+    guard.start(account_id, user_id, jwt, keep_ids, interval_seconds=30)  # 每账号一轮；间隔按秒
     guard.stop(account_id) / guard.stop_all()
     guard.status()                                     # account_id -> 运行状态（给 UI 轮询）
 
@@ -30,9 +30,10 @@ import time
 import sand_api
 
 TICK_SECONDS = 30.0
-DEFAULT_INTERVAL_MINUTES = 1
-MAX_INTERVAL_MINUTES = 120
-SECONDS_PER_MINUTE = 60.0
+DEFAULT_INTERVAL_SECONDS = 30
+# 下限 5 秒：再快只会把官方接口打成人机校验，踢下线本身也要几秒才在云端生效。
+MIN_INTERVAL_SECONDS = 5
+MAX_INTERVAL_SECONDS = 3600
 REVOKE_COOLDOWN = 30.0
 REVOKE_RETRY = 5.0
 AUTH_FAIL_LIMIT = 30
@@ -57,20 +58,35 @@ def clean_ids(ids) -> list:
     return out
 
 
-def clean_interval_minutes(value, default: int = DEFAULT_INTERVAL_MINUTES) -> int:
-    """检测间隔：整数分钟，夹在 1–MAX_INTERVAL_MINUTES。非法值回退 default。"""
+def clean_interval_seconds(value, default: int = DEFAULT_INTERVAL_SECONDS) -> int:
+    """检测间隔：整数秒，夹在 MIN_INTERVAL_SECONDS–MAX_INTERVAL_SECONDS。非法值回退 default。"""
     try:
         n = int(value)
     except (TypeError, ValueError):
         try:
             n = int(default)
         except (TypeError, ValueError):
-            n = DEFAULT_INTERVAL_MINUTES
-    if n < 1:
-        n = 1
-    if n > MAX_INTERVAL_MINUTES:
-        n = MAX_INTERVAL_MINUTES
+            n = DEFAULT_INTERVAL_SECONDS
+    if n < MIN_INTERVAL_SECONDS:
+        n = MIN_INTERVAL_SECONDS
+    if n > MAX_INTERVAL_SECONDS:
+        n = MAX_INTERVAL_SECONDS
     return n
+
+
+def interval_from_saved_row(row) -> int | None:
+    """读落盘间隔：优先 intervalSeconds；旧版 intervalMinutes 按 60 秒换算。"""
+    if not isinstance(row, dict):
+        return None
+    if row.get("intervalSeconds") is not None:
+        return clean_interval_seconds(row.get("intervalSeconds"))
+    if row.get("intervalMinutes") is not None:
+        try:
+            minutes = int(row.get("intervalMinutes"))
+        except (TypeError, ValueError):
+            return None
+        return clean_interval_seconds(minutes * 60)
+    return None
 
 
 class _Guard:
@@ -84,7 +100,7 @@ class _Guard:
         keep_ids: list,
         predecessor=None,
         tick_seconds: float = TICK_SECONDS,
-        interval_minutes=None,
+        interval_seconds=None,
     ) -> None:
         self.account_id = account_id
         self.user_id = user_id
@@ -95,7 +111,7 @@ class _Guard:
         # 上一个同账号的线程：新循环先等它退出，保证同一账号绝不重叠两个循环。
         self.predecessor = predecessor
         self.tick_seconds = max(0.01, float(tick_seconds))
-        self.interval_minutes = None if interval_minutes is None else int(interval_minutes)
+        self.interval_seconds = None if interval_seconds is None else int(interval_seconds)
         # 账号已被删除：线程退出时不再留「最后一帧」，status() 也不再报它。
         self.forgotten = False
         self.started_at = _now()
@@ -126,8 +142,8 @@ class _Guard:
             "lastKicked": list(self.last_kicked),
             "sessionCount": self.session_count,
         }
-        if self.interval_minutes is not None:
-            out["intervalMinutes"] = int(self.interval_minutes)
+        if self.interval_seconds is not None:
+            out["intervalSeconds"] = int(self.interval_seconds)
         return out
 
 
@@ -176,8 +192,9 @@ class DeviceGuardManager:
                 # 上次退出时保护是否开着：只用于 UI 提示「上次开着，需重新启动」，绝不自动恢复。
                 "wasRunning": bool(row.get("running")),
             }
-            if row.get("intervalMinutes") is not None:
-                out[str(account_id)]["intervalMinutes"] = clean_interval_minutes(row.get("intervalMinutes"))
+            seconds = interval_from_saved_row(row)
+            if seconds is not None:
+                out[str(account_id)]["intervalSeconds"] = seconds
         return out
 
     def _save(self) -> None:
@@ -192,8 +209,9 @@ class DeviceGuardManager:
                 "kickedCount": int(row.get("kickedCount") or 0),
                 "running": bool(guard is not None and not guard.stop_event.is_set()),
             }
-            if row.get("intervalMinutes") is not None:
-                entry["intervalMinutes"] = clean_interval_minutes(row.get("intervalMinutes"))
+            seconds = interval_from_saved_row(row)
+            if seconds is not None:
+                entry["intervalSeconds"] = seconds
             data[account_id] = entry
         try:
             os.makedirs(os.path.dirname(self._state_path) or ".", exist_ok=True)
@@ -216,11 +234,11 @@ class DeviceGuardManager:
             guard = self._guards.get(str(account_id or ""))
             return bool(guard is not None and not guard.stop_event.is_set())
 
-    def start(self, account_id: str, user_id: str, jwt: str, keep_ids, interval_minutes=None) -> dict:
+    def start(self, account_id: str, user_id: str, jwt: str, keep_ids, interval_seconds=None) -> dict:
         """开启保护。名单为空拒绝；同账号已在跑则先叫停旧循环再接上新名单（不重叠）。
 
-        interval_minutes 为 None 时沿用 manager 的 tick_seconds（单测用短间隔）。
-        传入数值则按分钟（1–120）换算等待时间。
+        interval_seconds 为 None 时沿用 manager 的 tick_seconds（单测用短间隔）。
+        传入数值则按秒（5–3600）等待。
         """
         account_id = str(account_id or "").strip()
         keep = clean_ids(keep_ids)
@@ -233,12 +251,12 @@ class DeviceGuardManager:
                 "ok": False,
                 "error": "保留名单为空：至少勾选一台要保留的设备，否则会把所有设备（含本机）全部踢下线",
             }
-        if interval_minutes is None:
-            minutes = None
+        if interval_seconds is None:
+            seconds = None
             tick = self._tick_seconds
         else:
-            minutes = clean_interval_minutes(interval_minutes)
-            tick = max(0.01, float(minutes) * SECONDS_PER_MINUTE)
+            seconds = clean_interval_seconds(interval_seconds)
+            tick = float(seconds)
         with self._lock:
             old = self._guards.get(account_id)
             predecessor = None
@@ -253,7 +271,7 @@ class DeviceGuardManager:
                 keep,
                 predecessor=predecessor,
                 tick_seconds=tick,
-                interval_minutes=minutes,
+                interval_seconds=seconds,
             )
             guard.thread = threading.Thread(
                 target=self._run, args=(guard,), name=f"device-guard-{account_id}", daemon=True
@@ -261,8 +279,8 @@ class DeviceGuardManager:
             self._guards[account_id] = guard
             self._finished.pop(account_id, None)
             saved = {"keepIds": keep, "updatedAt": _now(), "kickedCount": 0, "wasRunning": False}
-            if minutes is not None:
-                saved["intervalMinutes"] = minutes
+            if seconds is not None:
+                saved["intervalSeconds"] = seconds
             self._saved[account_id] = saved
             self._save()
             guard.thread.start()
@@ -335,8 +353,9 @@ class DeviceGuardManager:
                     "wasRunning": bool(row.get("wasRunning")),
                     "saved": True,
                 }
-                if row.get("intervalMinutes") is not None:
-                    out[account_id]["intervalMinutes"] = int(row["intervalMinutes"])
+                seconds = interval_from_saved_row(row)
+                if seconds is not None:
+                    out[account_id]["intervalSeconds"] = seconds
             return out
 
     # ---- 循环 ----

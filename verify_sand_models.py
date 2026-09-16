@@ -434,8 +434,7 @@ def summarize_log_outcomes(rows: List[LogOutcome]) -> Dict[str, Counter]:
 
 
 def print_patch_status() -> sand_patch.PatchStatus:
-    layout = sand_patch.resolve_cursor_layout()
-    st = sand_patch.inspect_status(layout)
+    raise SystemExit("本机 Cursor 补丁功能已从此工具移除，verify_sand_models.py 不再适用。")
     print("=== 补丁状态（sand_patch 原理 B）===")
     print(f"Cursor: {layout.version} @ {layout.install_root}")
     print(f"installed: {st.installed}")

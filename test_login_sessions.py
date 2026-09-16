@@ -330,5 +330,94 @@ class RevokeSessionTest(unittest.TestCase):
         self.assertEqual(json.loads(body), {"session_id": self.SID, "type": 1})
 
 
+class RevokeManyTest(unittest.TestCase):
+    def test_empty_items_does_not_call_revoke(self):
+        calls = []
+        res = sand_api.revoke_many([], lambda sid, stype: calls.append((sid, stype)) or {"ok": True})
+        self.assertFalse(res["ok"])
+        self.assertIn("没有", res["error"])
+        self.assertEqual(res["kicked"], [])
+        self.assertEqual(res["failed"], [])
+        self.assertEqual(calls, [])
+
+    def test_normalizes_dicts_and_strings_and_dedupes(self):
+        calls = []
+        items = [
+            {"sessionId": "aaa", "type": "web"},
+            "aaa",
+            {"session_id": "bbb", "session_type": "SESSION_TYPE_CLIENT"},
+            {"sessionId": "  ", "type": "web"},
+            None,
+            {"sessionId": "ccc", "typeRaw": "SESSION_TYPE_MOBILE"},
+        ]
+        res = sand_api.revoke_many(
+            items, lambda sid, stype: calls.append((sid, stype)) or {"ok": True, "status": 200}
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual([c[0] for c in calls], ["aaa", "bbb", "ccc"])
+        self.assertEqual(calls[0][1], "web")
+        self.assertEqual(calls[1][1], "SESSION_TYPE_CLIENT")
+        self.assertEqual(calls[2][1], "SESSION_TYPE_MOBILE")
+        self.assertEqual(res["kickedCount"], 3)
+        self.assertEqual(res["failedCount"], 0)
+
+    def test_continues_after_one_failure(self):
+        def fn(sid, _stype):
+            if sid == "bad":
+                return {"ok": False, "error": "nope", "status": 401}
+            return {"ok": True, "status": 200}
+
+        res = sand_api.revoke_many(
+            [
+                {"sessionId": "good", "type": "web"},
+                {"sessionId": "bad", "type": "client"},
+                {"sessionId": "ok2", "type": "web"},
+            ],
+            fn,
+        )
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["kickedCount"], 2)
+        self.assertEqual(res["failedCount"], 1)
+        self.assertEqual(res["failed"][0]["sessionId"], "bad")
+        self.assertEqual(res["error"], "nope")
+
+    def test_revoke_fn_exception_is_a_failed_item(self):
+        def fn(sid, _stype):
+            if sid == "boom":
+                raise RuntimeError("network down")
+            return {"ok": True, "status": 200}
+
+        res = sand_api.revoke_many(["ok", "boom"], fn)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["kickedCount"], 1)
+        self.assertEqual(res["failed"][0]["sessionId"], "boom")
+        self.assertIn("network down", res["failed"][0]["error"])
+
+
+class PickKeepSessionIdsTest(unittest.TestCase):
+    SESSIONS = [
+        {"sessionId": "client-a", "type": "client"},
+        {"sessionId": "web-b", "type": "web"},
+        {"sessionId": "phone-c", "type": "other", "typeRaw": "SESSION_TYPE_MOBILE"},
+    ]
+
+    def test_prefers_saved_keep_ids_that_are_still_online(self):
+        keep = sand_api.pick_keep_session_ids(
+            self.SESSIONS, saved_keep_ids=["web-b", "gone", "client-a"], is_local=True
+        )
+        self.assertEqual(keep, ["web-b", "client-a"])
+
+    def test_local_account_without_saved_keeps_all_clients(self):
+        keep = sand_api.pick_keep_session_ids(self.SESSIONS, saved_keep_ids=[], is_local=True)
+        self.assertEqual(keep, ["client-a"])
+
+    def test_other_account_without_saved_keeps_all_current_sessions(self):
+        keep = sand_api.pick_keep_session_ids(self.SESSIONS, saved_keep_ids=None, is_local=False)
+        self.assertEqual(keep, ["client-a", "web-b", "phone-c"])
+
+    def test_empty_sessions_returns_empty(self):
+        self.assertEqual(sand_api.pick_keep_session_ids([], saved_keep_ids=["x"], is_local=True), [])
+
+
 if __name__ == "__main__":
     unittest.main()

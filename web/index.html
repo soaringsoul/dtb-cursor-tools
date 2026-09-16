@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sand 资格领取器</title>
+<title>cursor账号管理器</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <main>
     <header class="glass hero">
       <div class="hero-title">
-        <div class="logo">S</div>
+        <div class="logo">C</div>
         <div>
-          <h1>Sand 资格领取器</h1>
+          <h1>cursor账号管理器</h1>
           <p class="sub">Grok Bot（Sand）批量领取 · 导入即自动验证账号 · Bot / Auto / 高级 三池额度分开看</p>
         </div>
       </div>
@@ -30,15 +30,15 @@
 
     <div class="notice glass" role="note">
       <span class="notice-tag">公益免费</span>
-      <span>本工具<b>完全免费、纯公益分享</b>，仅供学习交流，严禁倒卖或收费。若是<b>花钱买到</b>的，请向卖家<b>申请全额退款</b>，并留意文件是否被篡改。</span>
+      <span>作者 <b>夜雨微寒</b>。本工具<b>完全免费、纯公益分享</b>，仅供学习交流，严禁倒卖或收费。若是<b>花钱买到</b>的，请向卖家<b>申请全额退款</b>，并留意文件是否被篡改。</span>
     </div>
 
-    <nav class="tabs" id="tabBar" role="tablist" aria-label="功能页" data-active="accounts">
-      <button type="button" class="tab active" role="tab" id="tabAccounts" data-tab="accounts" aria-selected="true" aria-controls="panelAccounts">账号管理 <span class="tab-badge" id="tabAccountCount">0</span></button>
-      <button type="button" class="tab" role="tab" id="tabPatch" data-tab="patch" aria-selected="false" aria-controls="panelPatch">本机 Cursor 补丁 <span class="pill idle" id="patchPill">检测中…</span></button>
+    <nav class="tab-bar glass" role="tablist" aria-label="功能页">
+      <button type="button" class="tab-btn active" id="tabAccounts" role="tab" aria-selected="true" aria-controls="paneAccounts" data-tab="accounts">账号管理</button>
+      <button type="button" class="tab-btn" id="tabAgents" role="tab" aria-selected="false" aria-controls="paneAgents" data-tab="agents">云端agent管理</button>
     </nav>
 
-    <div id="panelAccounts" class="tab-panel" role="tabpanel" aria-labelledby="tabAccounts">
+    <div class="tab-pane" id="paneAccounts" role="tabpanel" aria-labelledby="tabAccounts">
     <section class="glass card" id="importCard">
       <div class="card-head">
         <h2>导入账号</h2>
@@ -57,13 +57,16 @@
         <label class="conc" title="导入后立刻联网验证这些号：是否有效、邮箱、套餐、订阅剩余时间、Bot / Auto / 高级 用量">
           <input type="checkbox" id="autoVerifyChk" checked /> 导入后自动验证
         </label>
-        <span class="hint" id="importHint">支持批量粘贴多行或选多个 JSON；「邮箱----token」会直接认出邮箱。</span>
+        <span class="hint" id="importHint">支持批量多行或多个 JSON；「邮箱----token」会直接认出邮箱。</span>
       </div>
     </section>
 
     <section class="glass card" id="accountsCard">
       <div class="card-head">
-          <h2>账号列表 <span class="pill idle" id="countPill">0 个</span> <span class="pill guard" id="guardGlobal" role="button" tabindex="0" title="本机设备保护运行中：点击打开下方面板。收起面板不会停止保护。" hidden></span></h2>
+          <h2>账号列表 <span class="pill idle" id="countPill">0 个</span> <span class="pill guard" id="guardGlobal" role="button" tabindex="0" title="本机设备保护运行中：点击从右侧打开抽屉。关闭抽屉不会停止保护。" hidden></span></h2>
+          <div class="actions">
+            <button type="button" class="btn" id="btnShowTokens" aria-pressed="false" title="在账号格分别显示 Worksession token 与 refresh_token，可单独复制">显示 Token</button>
+          </div>
       </div>
       <div class="toolbar">
         <div class="toolbar-opts">
@@ -73,12 +76,14 @@
           <label class="conc">并发
             <input type="number" id="concInput" min="1" max="10" value="3" />
           </label>
-          <span class="hint" id="selHint">未勾选时「验证 / 领取」对全部生效；「删除选中」只删勾选的。</span>
+          <span class="hint" id="selHint">验证 / 领取：不勾选=全部。删除 / 批量保护：只处理勾选。</span>
         </div>
         <div class="toolbar-acts">
           <button class="btn danger" id="btnRemoveSel" title="删除勾选的账号（不勾选不会删）">删除选中</button>
           <button class="btn" id="btnVerify" title="验证账号是否有效（过期 / 401 / 403），并刷新邮箱、套餐、订阅剩余、Bot / Auto / 高级 用量、云端登录会话。不做领取。">验证账号</button>
           <button class="btn" id="btnExport" title="全部导出为 txt：先按套餐分大类（Ultra / Pro+ / Pro / 团队 / Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，每段头部注明，段内按剩余时间从短到长">导出全部</button>
+          <button class="btn" id="btnGuardSel" title="给勾选的账号同时开启本机设备保护。每个号保留当前在线设备（有上次勾选则沿用），之后新登录会被踢。不勾选不会开。">批量保护</button>
+          <button class="btn" id="btnGuardStopSel" title="停止勾选账号的本机设备保护。不勾选不会停。">停止选中保护</button>
           <button class="btn primary" id="btnClaimAll" title="给账号领取 Sand（Grok Bot）资格；已开通的会直接跳过">批量领取</button>
         </div>
       </div>
@@ -95,7 +100,7 @@
               <th>套餐</th>
               <th>订阅到期</th>
               <th>Sand 状态</th>
-              <th>额度（Bot 周 / Auto 月 / 高级 月）</th>
+              <th class="col-quota">额度（Bot 周 / Auto 月 / 高级 月）</th>
               <th class="col-act">操作</th>
             </tr>
           </thead>
@@ -108,55 +113,31 @@
         </div>
       </div>
     </section>
+    </div>
 
-    <section class="glass card" id="guardCard" hidden>
+    <div class="tab-pane" id="paneAgents" role="tabpanel" aria-labelledby="tabAgents" hidden>
+    <section class="glass card" id="agentsCard">
       <div class="card-head">
-        <h2 id="guardTitle">本机设备保护</h2>
-        <div class="actions">
-          <button class="btn" id="guardBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
-          <button class="btn" id="guardRefresh" title="重新拉取云端登录设备">刷新</button>
-          <button class="btn" id="guardCancel" title="收起面板，不影响已启动的保护">收起</button>
-          <button class="btn primary" id="guardStart">启动保护</button>
-          <button class="btn danger" id="guardStop" hidden>停止保护</button>
-        </div>
+        <h2>云端 Agent <span class="pill idle" id="apiKeyCountPill">0 把密钥</span></h2>
       </div>
-      <div class="guard-opts" id="guardOpts">
-        <label class="conc" for="guardInterval" title="保护开启后每隔这么多分钟拉一次云端设备列表">
-          检测间隔
-          <input type="number" id="guardInterval" min="1" max="120" step="1" value="1" />
-          分钟
-        </label>
+      <div class="dropzone">
+        <textarea id="apiKeyInput" spellcheck="false"
+          placeholder="粘贴 Cursor API Key，每行一把。形如 crsr_...&#10;在 Dashboard → API Keys 创建：https://cursor.com/dashboard/api"></textarea>
       </div>
-      <p class="hint guard-sub" id="guardSub"></p>
-      <div class="guard-body" id="guardBody"></div>
-      <p class="hint" id="guardFoot">开启时可设置检测间隔（1–120 分钟）。踢下线用和官网 Revoke 相同的请求；成功后设备应立刻从列表消失，还在就会自动重试。点「收起」只藏这块面板，保护继续在后台跑。改间隔需先停止再重新启动。</p>
+      <div class="row-actions">
+        <button class="btn primary" id="btnAddApiKey" title="用 /v1/me 校验后存到本机">添加密钥</button>
+        <span class="hint">密钥只存本机（与账号同一目录，Windows 走 DPAPI）。上次粘贴的内容会留在输入框，完整密钥不会出现在下面的列表里。</span>
+      </div>
+      <div id="apiKeyList"></div>
+      <div class="empty" id="apiKeyEmpty">
+        <span class="empty-mark">A</span>
+        <b>还没有 API Key</b>
+        <span>粘贴 crsr_ 密钥后点「添加密钥」，即可列出并清理该账号下的云端 Agent</span>
+      </div>
     </section>
     </div>
 
-    <div id="panelPatch" class="tab-panel" role="tabpanel" aria-labelledby="tabPatch" hidden>
-    <section class="glass card" id="patchCard">
-      <div class="card-head">
-        <h2>本机 Cursor 补丁</h2>
-        <div class="actions">
-          <button class="btn" id="btnPatchCheck" title="重新逐条检测每条补丁规则在本机 Cursor 里的状态">检测</button>
-          <button class="btn" id="btnVerifyRuntime" title="读 Cursor 自己的 agent-host 日志：本地回路有没有加载、最近几轮走的是本地还是云端、有没有 401">验证生效</button>
-          <button class="btn primary" id="btnPatch">打补丁</button>
-          <button class="btn ghost" id="btnRestore">回退</button>
-        </div>
-      </div>
-      <p class="hint" id="patchInfo">正在检测本机 Cursor 安装…</p>
-      <div class="path-bar">
-        <span class="path-k">安装路径</span>
-        <input type="text" id="cursorPathInput" spellcheck="false"
-          placeholder="自定义 Cursor 路径（Cursor.exe / resources/app / 安装目录），留空=自动检测" />
-        <button class="btn" id="btnSetPath">设置路径</button>
-      </div>
-      <div id="patchRules" class="rules" hidden></div>
-      <div id="patchReport" class="report" hidden></div>
-    </section>
-    </div>
-
-    <p class="foot">仅本机直连 Cursor 官方接口领取；token 不上传第三方。付费账号（Pro+/Ultra/Team）免绑卡，免费账号需验证信用卡。</p>
+    <p class="foot">仅本机直连 Cursor 官方接口；登录票与 API Key 都不上传第三方。付费账号（Pro+/Ultra/Team）免绑卡，免费账号需验证信用卡。</p>
   </main>
 
   <div class="modal-mask" id="helpMask" hidden>
@@ -164,7 +145,7 @@
       <h2>使用说明</h2>
       <div class="modal-body">
         <p><b>公益免费声明</b></p>
-        <p>本工具完全免费、纯公益分享，仅供学习交流，严禁倒卖或收费。若你是<b>付费购买</b>得到的，请立即向卖家<b>申请退款</b>——作者从不收费，付费即被倒卖，并注意甄别文件是否被篡改。</p>
+        <p>本工具由作者<b>夜雨微寒</b>制作，完全免费、纯公益分享，仅供学习交流，严禁倒卖或收费。若你是<b>付费购买</b>得到的，请立即向卖家<b>申请退款</b>——作者夜雨微寒从不收费，付费即被倒卖，并注意甄别文件是否被篡改。</p>
         <p><b>领取规则（按套餐区分）</b></p>
         <ul>
           <li><b>免费 Free 账号</b>：领取 Sand 需要<b>自行手动绑定信用卡</b>。点该账号那一行的<b>「网页领取」</b>，会用它的登录态打开浏览器直接到领取页，你在浏览器里完成绑卡即可。</li>
@@ -177,12 +158,12 @@
           <li><b>验证账号</b>：只做检查，不领取（不会碰任何领取接口）。判定 token 是否有效（过期 / 被服务端拒绝会标「失效」），读取 Sand 资格状态、套餐、订阅剩余、三池用量。「Sand 状态」列的「已开通」来自 Cursor 的资格接口，下面小字会写「套餐自带」或「本次领取」。</li>
           <li><b>批量领取</b>：给账号领 Sand（Grok Bot）资格，已开通的直接跳过；可设「并发」数并行。<b>勾选</b>部分账号则只处理勾选的，不勾则处理全部。</li>
           <li><b>删除选中</b>：批量删除勾选的账号；「清空」删全部。</li>
-          <li><b>导出全部</b>：txt <b>先按套餐分大类</b>（Ultra → Pro+ → Pro → 团队 → Free），大类里再分「未用 Bot 额度 / 已用 Bot 额度 / 到期不续」，失效与未验证单独放最后；文件头给出各套餐数量，每段头部注明分类依据与每个号的到期 / 剩余 / Sand / 三池用量，段内按订阅剩余时间从短到长。账号行保持 <code>邮箱----user_id::token</code>，可原样再导入。</li>
+          <li><b>探测 Refresh / 刷新登录票</b>：从本机 Cursor 或号池整行记录 refresh_token；再用它向官方 OAuth 换新的登录票。</li>
+          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行邮箱下方的「显示 Token」（旁边是探测票 / 刷登录票 / 网页领取 / 复制）。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。</li>
           <li><b>进控制台</b>：用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending），可直接看用量 / 账单 / 设置。每个账号一个独立浏览器 profile，不影响你日常浏览器的登录。</li>
-          <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；每台都可<b>踢下线</b>（与官网 Revoke 相同，成功后应立刻从列表消失）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP；若该号正在本机 Cursor 登录，一条客户端会标<b>本机</b>，多条则标<b>可能是本机</b>。</li>
-          <li><b>本机设备保护</b>：点某行「本机保护」会在账号列表下方打开面板（不挡窗口，导入 / 验证 / 进控制台照常用）。开启前<b>勾选要保留的设备</b>并设置<b>检测间隔（分钟）</b>。若该号正在本机 Cursor 登录：云端只有一条客户端会话会标<b>本机</b>，多条则都标<b>可能是本机</b>（接口不区分电脑）。之后按间隔检测并<b>自动下线未保留设备</b>。点「收起」只藏面板，<b>不会停止保护</b>；点顶部「保护中」标签可再打开。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」（会回填上次的勾选与间隔）。</li>
-          <li><b>本机 Cursor 补丁</b>：给本机 Cursor 打 / 回退 Sand 客户端模式补丁，规则与 <code>cursor-account-manager</code> 插件完全同一套（兼容 3.18.9 / 3.18.25 / 3.19.13）。面板逐条列出请求头、本地回路、子代理生命周期等规则状态；点「打补丁」会关闭 Cursor、按插件逻辑写入并校验、重签名后重启。打完后点<b>「验证生效」</b>可读 Cursor 的 agent-host 日志。</li>
-          <li><b>「显示成功其实没成功」的常见原因</b>：① 本机装了多个 Cursor，补丁打在 A、平时开的是 B（面板会标出正在运行的 Cursor 路径，用「设置路径」指到你实际用的那份）；② Cursor 自动更新把文件换回去了（关自动更新，重新打）；③ 补丁没问题但本机登录号没有 Sand 资格 / 票已失效（报告最后一步会告诉你）。</li>
+          <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；可勾选后<b>踢掉所选</b>，也可单台踢下线（与官网 Revoke 相同，成功后应立刻从列表消失）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP；若该号正在本机 Cursor 登录，一条客户端会标<b>本机</b>，多条则标<b>可能是本机</b>。</li>
+          <li><b>本机设备保护</b>：账号列表每行只放「本机保护」入口，点开会从<b>右侧抽出抽屉</b>；保护运行中也是打开抽屉，<b>停止保护在抽屉里</b>。开启前<b>勾选要保留的设备</b>，可用「全选保留 / 全不选 / 只留本机」，再点<b>立即删除未勾选</b>马上踢掉其余设备；也可设置<b>检测间隔（秒，默认 30）</b>后启动持续保护。抽屉里的<b>「检测登录时间」</b>会再弹一层设间隔（默认 120 秒）：把设备创建时间与本机现在比对，落在间隔内的标<b>刚登录</b>，并<b>清空原勾选、只勾这些刚登录设备</b>。<b>可同时保护多个账号</b>：表格勾选后点「批量保护」，每个号自动保留当前在线设备（有上次勾选则沿用），之后新登录会被踢；「停止选中保护」停勾选的号。顶部「保护中 N 个账号」可打开抽屉，多号时抽屉里可切换。点遮罩或「关闭」只收起抽屉，<b>不会停止保护</b>；关掉后可继续导入 / 验证 / 进控制台。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」或再批量开启（会回填上次的勾选与间隔）。</li>
+          <li><b>云端 Agent</b>：在顶部「云端agent管理」页。与登录票账号列表独立。把 Cursor Dashboard → <a href="https://cursor.com/dashboard/api" target="_blank" rel="noopener">API Keys</a> 里创建的用户密钥（<code>crsr_...</code>）粘贴进来，按密钥列出该账号下全部 Cloud Agent（含已归档）。列表每行可单独删除；「一键清理」会<b>永久删除</b>这把密钥下的全部 Agent，不可恢复，删除前会弹出数量确认。密钥只存本机、不上传；列表不显示完整密钥，输入框会记住上次粘贴的内容。</li>
         </ul>
         <p><b>额度怎么看</b></p>
         <ul>
@@ -201,11 +182,26 @@
       <h2 id="sessionTitle">登录设备</h2>
       <p class="hint modal-sub" id="sessionSub"></p>
       <div class="modal-body" id="sessionBody"></div>
-      <p class="hint modal-foot">设备列表用登录票走接口。对应 dashboard Settings → Active Sessions。踢下线与官网 Revoke 相同，成功后应立刻从列表消失。接口不提供电脑名或 IP；若该号正在本机 Cursor 登录，一条客户端会标「本机」，多条则标「可能是本机」。</p>
+      <p class="hint modal-foot">对应 Settings → Active Sessions。勾选后可「踢掉所选」，成功后应立刻从列表消失。接口不提供电脑名或 IP。</p>
       <div class="modal-actions">
         <button class="btn" id="sessionBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
         <button class="btn" id="sessionRefresh" title="重新拉取云端登录设备">刷新</button>
         <button class="btn primary" id="sessionOk">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask nested" id="loginDetectMask" hidden>
+    <div class="modal glass quit" role="dialog" aria-labelledby="loginDetectTitle">
+      <h2 id="loginDetectTitle">检测登录时间</h2>
+      <p class="hint">把每台设备的创建时间与本机现在比对。落在间隔内的会标「刚登录」，并清空原勾选、只勾这些刚登录设备（接口没有电脑名）。</p>
+      <label class="conc" for="loginDetectSec">间隔
+        <input type="number" id="loginDetectSec" min="5" max="3600" step="5" value="120" />
+        秒内
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="loginDetectCancel">取消</button>
+        <button type="button" class="btn primary" id="loginDetectOk">开始检测</button>
       </div>
     </div>
   </div>
@@ -217,6 +213,58 @@
       <div class="menu-grid" id="menuBody"></div>
       <div class="modal-actions"><button class="btn" id="menuClose">关闭</button></div>
     </div>
+  </div>
+
+  <div class="modal-mask" id="quitMask" hidden>
+    <div class="modal glass quit">
+      <h2>退出确认</h2>
+      <p class="hint">确定关闭 cursor账号管理器？</p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="quitCancel">取消</button>
+        <button type="button" class="btn danger" id="quitOk">关闭应用</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask nested" id="switchConfirmMask" hidden>
+    <div class="modal glass quit" role="dialog" aria-labelledby="switchConfirmTitle" aria-describedby="switchConfirmBody">
+      <h2 id="switchConfirmTitle">切号确认</h2>
+      <div id="switchConfirmBody">
+        <p class="hint">确定把本机 Cursor 切到该账号？会先关掉当前 Cursor，写入登录态后再自动重启。</p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="switchConfirmCancel">取消</button>
+        <button type="button" class="btn primary" id="switchConfirmOk">确认切号</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask drawer-mask" id="guardMask" hidden>
+    <aside class="glass card drawer" id="guardCard" role="dialog" aria-modal="true" aria-labelledby="guardTitle">
+      <div class="drawer-head">
+        <div class="drawer-title">
+          <h2 id="guardTitle">本机保护</h2>
+          <p class="drawer-email" id="guardEmail"></p>
+        </div>
+        <div class="drawer-head-acts">
+          <button class="btn" id="guardCancel" title="关闭抽屉，不影响已启动的保护">关闭</button>
+          <button class="btn primary" id="guardStart">启动保护</button>
+          <button class="btn danger" id="guardStop" hidden>停止保护</button>
+        </div>
+      </div>
+      <div class="drawer-tools" id="guardOpts">
+        <button class="btn tiny" id="guardRefresh" title="重新拉取云端登录设备">刷新</button>
+        <button class="btn tiny" id="guardBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
+        <button class="btn tiny" id="guardDetect" title="比对创建时间，标出刚登录设备，并改勾这些设备">检测登录时间</button>
+        <label class="conc guard-interval" for="guardInterval" title="保护开启后每隔这么多秒拉一次云端设备列表">
+          间隔
+          <input type="number" id="guardInterval" min="5" max="3600" step="5" value="30" />
+          秒
+        </label>
+      </div>
+      <p class="hint guard-sub" id="guardSub"></p>
+      <div class="guard-body" id="guardBody"></div>
+    </aside>
   </div>
 
   <div class="toast" id="toast" hidden></div>

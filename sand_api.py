@@ -210,6 +210,72 @@ def exchange_web_to_session(token: str, timeout: int = 30):
     return None, None
 
 
+# Cursor IDE 官方 OAuth client_id（多份逆向/开源实现一致）。
+CURSOR_OAUTH_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
+OAUTH_TOKEN_URL = "https://api2.cursor.sh/oauth/token"
+
+
+def refresh_login_tokens(refresh_token: str, client_id: str | None = None) -> dict:
+    """用 refresh_token 换取新的 access/refresh 登录票。
+
+    返回 {ok, accessToken, refreshToken, clientId, tokenType, exp, error, shouldLogout, status}。
+    """
+    rt = (refresh_token or "").strip()
+    if not rt:
+        return {"ok": False, "error": "缺少 refresh_token"}
+    cid = (client_id or CURSOR_OAUTH_CLIENT_ID).strip()
+    payload = json.dumps(
+        {"grant_type": "refresh_token", "client_id": cid, "refresh_token": rt},
+        ensure_ascii=False,
+    )
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json",
+        "user-agent": UA,
+    }
+    status, text = _post(OAUTH_TOKEN_URL, headers, payload)
+    if status == 0:
+        return {"ok": False, "error": f"网络错误：{text}", "status": 0}
+    try:
+        data = json.loads(text) if text else {}
+    except Exception:
+        return {
+            "ok": False,
+            "error": f"响应非 JSON（HTTP {status}）",
+            "status": status,
+            "raw": (text or "")[:200],
+        }
+    if data.get("shouldLogout"):
+        return {
+            "ok": False,
+            "error": "refresh_token 已失效，需要重新登录",
+            "status": status,
+            "shouldLogout": True,
+        }
+    if status != 200:
+        err = data.get("error_description") or data.get("error") or (text or "")[:200]
+        return {"ok": False, "error": f"HTTP {status}: {err}", "status": status}
+    access = data.get("access_token") or data.get("accessToken")
+    if not isinstance(access, str) or not access.strip():
+        return {"ok": False, "error": "响应缺少 access_token", "status": status}
+    new_refresh = data.get("refresh_token") or data.get("refreshToken") or rt
+    out = {
+        "ok": True,
+        "accessToken": access.strip(),
+        "refreshToken": str(new_refresh).strip(),
+        "clientId": cid,
+    }
+    try:
+        _uid, _jwt, claims = parse_token(access)
+        out["tokenType"] = claims.get("type")
+        exp = claims.get("exp")
+        if isinstance(exp, (int, float)):
+            out["exp"] = int(exp)
+    except Exception:
+        pass
+    return out
+
+
 def _cookie(user_id: str, jwt: str) -> str:
     return f"WorkosCursorSessionToken={user_id}%3A%3A{jwt}"
 
@@ -590,6 +656,41 @@ def annotate_local_sessions(sessions, is_local_account) -> list:
     return out
 
 
+def pick_keep_session_ids(sessions, saved_keep_ids=None, is_local=False):
+    """批量开启保护时自动生成保留名单。
+
+    优先级：上次勾选且仍在线 → 本机账号的全部客户端会话 → 当前全部在线设备。
+    没有在线设备时返回空列表，调用方应拒绝启动。
+    """
+    present = []
+    clients = []
+    seen = set()
+    for row in sessions or []:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("sessionId") or "").strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        present.append(sid)
+        kind = str(row.get("type") or "")
+        raw = str(row.get("typeRaw") or "")
+        if kind == "client" or raw == "SESSION_TYPE_CLIENT":
+            clients.append(sid)
+    saved = []
+    saved_seen = set()
+    for value in saved_keep_ids or []:
+        sid = str(value or "").strip()
+        if sid and sid in seen and sid not in saved_seen:
+            saved_seen.add(sid)
+            saved.append(sid)
+    if saved:
+        return saved
+    if is_local and clients:
+        return clients
+    return present
+
+
 def fetch_sessions(user_id: str, jwt: str) -> dict:
     """只读拉取云端登录会话。任何失败都返回 empty_session_block，不抛。"""
     status, text = _get(SESSIONS_URL, _web_get_headers(user_id, jwt))
@@ -623,6 +724,84 @@ def revoke_session(user_id: str, jwt: str, session_id: str, session_type=None) -
     body = json.dumps({"session_id": sid, "type": type_value})
     status, text = _post(SESSIONS_REVOKE_URL, _cookie_headers(user_id, jwt, origin=True), body)
     return _revoke_http_result(status, text)
+
+
+def clean_revoke_items(items):
+    """把前端传来的批量踢下线参数收成 [{session_id, session_type, sessionId}, ...]，去空去重。"""
+    if items is None:
+        raw = []
+    elif isinstance(items, (str, bytes)):
+        raw = [items]
+    elif isinstance(items, (list, tuple)):
+        raw = items
+    else:
+        raw = [items]
+    out = []
+    seen = set()
+    for it in raw:
+        sid = ""
+        stype = ""
+        if isinstance(it, str):
+            sid = it.strip()
+        elif isinstance(it, dict):
+            sid = str(it.get("sessionId") or it.get("session_id") or "").strip()
+            raw_type = it.get("typeRaw")
+            stype = it.get("session_type")
+            if stype in (None, ""):
+                stype = it.get("type")
+            if stype in (None, ""):
+                stype = raw_type
+            stype = "" if stype is None else str(stype).strip()
+        else:
+            continue
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        out.append({"session_id": sid, "session_type": stype, "sessionId": sid})
+    return out
+
+
+def revoke_many(items, revoke_fn):
+    """按列表逐个踢下线。一项失败不中断其余；ok 仅在全部成功时为 True。"""
+    targets = clean_revoke_items(items)
+    if not targets:
+        return {
+            "ok": False,
+            "error": "没有要踢下线的设备",
+            "kicked": [],
+            "failed": [],
+            "kickedCount": 0,
+            "failedCount": 0,
+        }
+    kicked = []
+    failed = []
+    for t in targets:
+        try:
+            res = revoke_fn(t["session_id"], t["session_type"]) or {}
+        except Exception as exc:
+            res = {"ok": False, "error": str(exc), "status": 0}
+        row = {
+            "sessionId": t["session_id"],
+            "session_type": t["session_type"],
+            "ok": bool(res.get("ok")),
+            "error": res.get("error") or "",
+            "status": res.get("status") or 0,
+        }
+        if res.get("waf"):
+            row["waf"] = True
+        (kicked if row["ok"] else failed).append(row)
+    err = ""
+    if failed:
+        err = failed[0].get("error") or "部分设备踢下线失败"
+    return {
+        "ok": not failed,
+        "error": err,
+        "kicked": kicked,
+        "failed": failed,
+        "kickedCount": len(kicked),
+        "failedCount": len(failed),
+        "waf": any(x.get("waf") for x in failed),
+    }
 
 
 def fetch_access(user_id: str, jwt: str):

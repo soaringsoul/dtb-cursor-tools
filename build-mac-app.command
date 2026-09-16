@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  Sand 资格领取器 · 一键打包成 Mac App(.dmg)
+#  cursor账号管理器 · 一键打包成 Mac App(.dmg)
 #  给【有 Mac 的群友】用：双击本文件，等几分钟，同目录生成「SandClaimer-<版本>.dmg」。
 #  之后把 .dmg 发群，其他 Mac 用户下载→打开→拖进“应用程序”→双击使用。
 #
@@ -12,7 +12,7 @@
 set -e
 cd "$(dirname "$0")" || exit 1
 
-APP_NAME="Sand资格领取器"
+APP_NAME="cursor账号管理器"
 BUNDLE_ID="com.sand.claimer"
 PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 

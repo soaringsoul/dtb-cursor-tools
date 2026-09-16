@@ -17,6 +17,7 @@ import uuid
 
 _KEYS = {
     "token": "cursorAuth/accessToken",
+    "refresh_token": "cursorAuth/refreshToken",
     "email": "cursorAuth/cachedEmail",
     "membership": "cursorAuth/stripeMembershipType",
 }
@@ -49,7 +50,7 @@ def machineid_path() -> str:
 
 
 def read_local_account() -> dict | None:
-    """返回 {token, email, membership}；未登录 / 读不到 token 时返回 None。"""
+    """返回 {token, refresh_token, email, membership}；未登录 / 读不到 token 时返回 None。"""
     path = state_db_path()
     if not os.path.isfile(path):
         return None

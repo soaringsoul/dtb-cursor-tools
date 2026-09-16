@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sand 资格领取器 · macOS 启动（源码模式，先运行一次 install-mac.command 装依赖）
+# cursor账号管理器 · macOS 启动（源码模式，先运行一次 install-mac.command 装依赖）
 # 双击若提示“无法打开/未验证的开发者”，右键本文件 → 打开。
 cd "$(dirname "$0")" || exit 1
 

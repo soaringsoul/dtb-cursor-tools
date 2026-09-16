@@ -1918,53 +1918,15 @@ def _verify_product_checksums(layout: CursorLayout) -> int:
 
 
 def inspect_status(layout: CursorLayout) -> PatchStatus:
-    """补丁状态以 cursor-account-manager 的 inspect 为准。"""
-    import cam_patch
+    raise SandToolError("本机 Cursor 补丁功能已从此工具移除")
 
-    try:
-        data = cam_patch.inspect(layout.app_root)
-    except cam_patch.CamPatchError as exc:
-        raise SandToolError(str(exc)) from exc
-    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
-    stream = totals.get("stream") if isinstance(totals.get("stream"), dict) else {}
 
-    def n(key: str) -> int:
-        try:
-            return int(stream.get(key) or 0)
-        except Exception:
-            return 0
+def install(layout: CursorLayout) -> int:
+    raise SandToolError("本机 Cursor 补丁功能已从此工具移除")
 
-    patched: List[Path] = []
-    for item in data.get("files") or []:
-        if not isinstance(item, dict) or not item.get("rel"):
-            continue
-        rel = Path(str(item["rel"]))
-        st = item.get("stream") if isinstance(item.get("stream"), dict) else {}
-        if int(item.get("sandAssignments") or 0) or any(int(st.get(k) or 0) for k in st):
-            patched.append((layout.app_root / rel).resolve())
-    version = str(data.get("version") or layout.version)
-    tested = cam_patch.is_tested_version(version)
-    return PatchStatus(
-        client_markers=n("client"),
-        eligibility_markers=n("eligibility"),
-        ide_matches=int(totals.get("unpatchedAssignments") or 0),
-        external_sand_matches=0,
-        external_marker_count=0,
-        legacy_client_markers=n("legacy"),
-        legacy_eligibility_markers=0,
-        patched_files=tuple(patched),
-        managed_local_route_markers=n("managedLocal"),
-        local_runtime_load_markers=n("runtimeLoad"),
-        direct_stream_markers=n("directStream"),
-        agent_host_enablement_markers=n("agentHost"),
-        agent_host_identity_markers=n("identity"),
-        move_exec_markers=n("moveExec"),
-        local_actions_markers=n("actionRoute") + n("completionWake"),
-        subagent_local_markers=n("subagentRoute") + n("subagentSession") + n("taskTool"),
-        stream_capable=tested or bool(data.get("streamPartial")) or bool(data.get("streamMode")),
-        stream_lifecycle=bool(data.get("streamLifecycle")),
-        tested_version=tested,
-    )
+
+def uninstall(layout: CursorLayout) -> int:
+    raise SandToolError("本机 Cursor 补丁功能已从此工具移除")
 
 
 def _create_backup(
@@ -2327,36 +2289,6 @@ def _mac_seal(layout: CursorLayout) -> None:
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
-
-
-def install(layout: CursorLayout) -> int:
-    """写入补丁：规则与文件改写走 cursor-account-manager，随后重签名并重启 Cursor。"""
-    import cam_patch
-
-    close_cursor(layout)
-    try:
-        cam_patch.apply(layout.app_root)
-    except cam_patch.CamPatchError as exc:
-        raise SandToolError(str(exc)) from exc
-    _mac_seal(layout)
-    close_cursor(layout)
-    start_cursor(layout)
-    return 0
-
-
-def uninstall(layout: CursorLayout) -> int:
-    """回退补丁：同样走插件的 restore / 就地拆标记。"""
-    import cam_patch
-
-    close_cursor(layout)
-    try:
-        cam_patch.restore(layout.app_root, force=True)
-    except cam_patch.CamPatchError as exc:
-        raise SandToolError(str(exc)) from exc
-    _mac_seal(layout)
-    close_cursor(layout)
-    start_cursor(layout)
-    return 0
 
 
 def _permission_hint() -> str:
