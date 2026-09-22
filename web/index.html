@@ -172,8 +172,12 @@
   </main>
 
   <div class="modal-mask" id="helpMask" hidden>
-    <div class="modal glass">
-      <h2>使用说明</h2>
+    <div class="modal glass help-modal" role="dialog" aria-labelledby="helpTitle">
+      <div class="help-head">
+        <h2 id="helpTitle">使用说明</h2>
+        <button type="button" class="btn ghost tiny" id="helpClose">关闭</button>
+      </div>
+      <div class="help-scroll">
       <div class="modal-body" id="helpIntro">
         <p>本工具由作者<b>夜雨微寒</b>制作，<b>完全免费</b>，token 只留本机、不上传。严禁倒卖或收费。</p>
         <div class="help-jobs" id="helpJobs"></div>
@@ -209,8 +213,11 @@
           <li><b>按量付费</b>：若出现「已扣 $x」，说明该号已开 on-demand 并产生了真实账单。</li>
         </ul>
       </div>
-      <label class="modal-check"><input type="checkbox" id="helpHide" /> 不再显示</label>
-      <div class="modal-actions"><button class="btn primary" id="helpOk">知道了</button></div>
+      </div>
+      <div class="help-foot">
+        <label class="modal-check"><input type="checkbox" id="helpHide" /> 不再显示</label>
+        <button class="btn primary" id="helpOk">知道了</button>
+      </div>
     </div>
   </div>
 

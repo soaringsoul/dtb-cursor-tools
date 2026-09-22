@@ -1005,6 +1005,39 @@ tr.guarding td:nth-child(2) { box-shadow: inset 3px 0 0 var(--guard); }
 .help-job b { display: block; margin-bottom: 2px; color: var(--ink); font-size: 14px; }
 .help-job span { color: var(--ink-secondary); font-size: 14px; }
 .help-more-row { margin: 0 0 8px; }
+#helpMask .help-modal {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  padding: 16px 20px 12px;
+}
+.help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.help-head h2 { margin: 0; }
+.help-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 10px 0 8px;
+}
+#helpMask .modal-body { max-height: none; overflow: visible; }
+.help-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.help-foot .modal-check { margin-top: 0; }
 
 .ticket-menu { position: relative; display: inline-block; margin-top: 6px; }
 .ticket-menu > summary {

@@ -3629,7 +3629,7 @@ async function boot() {
   if (bridge && bridge.mark_ui_ready) {
     try { await bridge.mark_ui_ready(); } catch (e) {}
   }
-  $("btnHelp").addEventListener("click", () => showHelp(true));
+  $("btnHelp").addEventListener("click", () => showHelp(false));
   $("btnToggleImport").addEventListener("click", toggleImportPanel);
   const btnHideNotice = $("btnHideNotice");
   if (btnHideNotice) {
@@ -3699,6 +3699,8 @@ async function boot() {
   $("rows").addEventListener("change", onTableChange);
   $("chkAll").addEventListener("change", onSelectAll);
   $("helpOk").addEventListener("click", hideHelp);
+  const helpClose = $("helpClose");
+  if (helpClose) helpClose.addEventListener("click", hideHelp);
   $("quitCancel").addEventListener("click", hideQuitConfirm);
   $("quitOk").addEventListener("click", confirmQuit);
   $("quitMask").addEventListener("click", (e) => {
