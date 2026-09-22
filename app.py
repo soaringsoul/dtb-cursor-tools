@@ -1051,7 +1051,7 @@ class Api:
         if grok_bot.find_app() is None:
             return {
                 "ok": False,
-                "error": "未找到本机 Grok Bot 客户端（例如 /Applications/Grok Bot.app）。Cursor 未关闭。",
+                "error": grok_bot.missing_app_message(cursor_untouched=True),
             }
         try:
             grok_bot.close_grok_bot()

@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 APP_NAME = "Grok Bot"
 BUNDLE_ID = "com.anysphere.sand"
+EXE_NAME = "Grok Bot.exe"
 SECRETS_FILE = "sand-secrets.json"
 ACCOUNTS_KEY = "cursor-accounts"
 ACCESS_KEY = "cursor-access-token"
@@ -405,6 +406,194 @@ def _oscrypt_matches_existing(password: str) -> bool:
     return False
 
 
+def _is_windows() -> bool:
+    return sys.platform == "win32" or os.name == "nt"
+
+
+def missing_app_message(*, cursor_untouched: bool = False) -> str:
+    if _is_windows():
+        text = "未找到本机 Grok Bot.exe。已在常见安装目录、卸载注册表和开始菜单里查找。"
+    else:
+        text = "未找到本机 Grok Bot 客户端（例如 /Applications/Grok Bot.app）。"
+    if cursor_untouched:
+        text += "Cursor 未关闭。"
+    return text
+
+
+def _windows_exe_in(directory: str) -> str:
+    return directory.rstrip("\\/") + "\\" + EXE_NAME
+
+
+def exe_paths_from_registry_text(text: str) -> List[str]:
+    """从 reg query 文本里取出 InstallLocation / DisplayIcon 指向的 Grok Bot.exe。"""
+    import re
+
+    found: List[str] = []
+    seen = set()
+    for line in (text or "").splitlines():
+        match = re.match(r"\s*(\S+)\s+REG_\w+\s+(.*)$", line)
+        if not match:
+            continue
+        name, raw = match.group(1), match.group(2).strip().strip('"')
+        raw = re.sub(r",\s*-?\d+$", "", raw).strip().strip('"')
+        if not raw:
+            continue
+        if name in ("DisplayIcon", "UninstallString", "QuietUninstallString"):
+            exe = raw
+            lower = exe.lower()
+            if ".exe" in lower:
+                exe = exe[: lower.rfind(".exe") + 4]
+            if not exe.lower().endswith(".exe"):
+                continue
+        elif name in ("InstallLocation", "InstallDir"):
+            exe = _windows_exe_in(raw)
+        elif name in ("(Default)",):
+            if not raw.lower().endswith(".exe"):
+                continue
+            exe = raw
+        else:
+            continue
+        key = exe.lower()
+        if key not in seen:
+            seen.add(key)
+            found.append(exe)
+    return found
+
+
+def _windows_search_roots() -> List[Path]:
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    program_files = os.environ.get("ProgramFiles") or r"C:\Program Files"
+    program_files_x86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+    program_w6432 = os.environ.get("ProgramW6432") or program_files
+    return [
+        Path(local) / "Programs",
+        Path(local),
+        Path(program_files),
+        Path(program_files_x86),
+        Path(program_w6432),
+    ]
+
+
+def _walk_for_exe(root: Path, max_depth: int = 3) -> Optional[Path]:
+    if not root.is_dir():
+        return None
+    root_depth = len(root.parts)
+    try:
+        for current, dirs, files in os.walk(root):
+            depth = len(Path(current).parts) - root_depth
+            if depth > max_depth:
+                dirs.clear()
+                continue
+            if EXE_NAME in files:
+                return Path(current) / EXE_NAME
+    except OSError:
+        return None
+    return None
+
+
+def _registry_exe_candidates() -> List[str]:
+    if not _is_windows():
+        return []
+    queries = [
+        ["reg", "query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall", "/s", "/f", APP_NAME],
+        ["reg", "query", r"HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall", "/s", "/f", APP_NAME],
+        ["reg", "query", r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", "/s", "/f", APP_NAME],
+        ["reg", "query", rf"HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\{EXE_NAME}"],
+        ["reg", "query", rf"HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths\{EXE_NAME}"],
+    ]
+    found: List[str] = []
+    for cmd in queries:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        found.extend(exe_paths_from_registry_text(proc.stdout or ""))
+    return found
+
+
+def _start_menu_exe_candidates() -> List[str]:
+    if not _is_windows():
+        return []
+    appdata = os.environ.get("APPDATA") or ""
+    program_data = os.environ.get("ProgramData") or r"C:\ProgramData"
+    roots = [
+        str(Path(appdata) / "Microsoft" / "Windows" / "Start Menu") if appdata else "",
+        str(Path(program_data) / "Microsoft" / "Windows" / "Start Menu"),
+    ]
+    script = (
+        "$sh = New-Object -ComObject WScript.Shell; "
+        "$roots = @(" + ",".join("'" + r.replace("'", "''") + "'" for r in roots if r) + "); "
+        "Get-ChildItem -Path $roots -Recurse -Filter '*Grok Bot*.lnk' -ErrorAction SilentlyContinue | "
+        "ForEach-Object { $sh.CreateShortcut($_.FullName).TargetPath }"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    out: List[str] = []
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip().strip('"')
+        if line.lower().endswith(".exe"):
+            out.append(line)
+    return out
+
+
+def _running_exe_candidates() -> List[str]:
+    if not _is_windows():
+        return []
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='Grok Bot.exe'\" | "
+        "Select-Object -ExpandProperty ExecutablePath"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip().lower().endswith(".exe")]
+
+
+def _first_existing_exe(candidates: List[str]) -> Optional[Path]:
+    for raw in candidates:
+        path = Path(raw)
+        if path.is_file() and path.name.lower() == EXE_NAME.lower():
+            return path
+        if path.is_dir():
+            nested = path / EXE_NAME
+            if nested.is_file():
+                return nested
+    return None
+
+
+def _search_windows_exe() -> Optional[Path]:
+    """在 Windows 上查找已安装的 Grok Bot.exe：正在运行的进程、注册表、开始菜单、常见安装目录。"""
+    hit = _first_existing_exe(_running_exe_candidates())
+    if hit:
+        return hit
+    hit = _first_existing_exe(_registry_exe_candidates())
+    if hit:
+        return hit
+    hit = _first_existing_exe(_start_menu_exe_candidates())
+    if hit:
+        return hit
+    for root in _windows_search_roots():
+        found = _walk_for_exe(root, max_depth=3)
+        if found:
+            return found
+    return None
+
+
 def find_app() -> Optional[Path]:
     if sys.platform == "darwin":
         for candidate in (
@@ -414,16 +603,8 @@ def find_app() -> Optional[Path]:
             if candidate.is_dir():
                 return candidate
         return None
-    if sys.platform == "win32" or os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        for candidate in (
-            Path(local) / "Programs" / APP_NAME / f"{APP_NAME}.exe",
-            Path(local) / "Programs" / "grok-bot" / f"{APP_NAME}.exe",
-            Path(os.environ.get("ProgramFiles") or r"C:\Program Files") / APP_NAME / f"{APP_NAME}.exe",
-        ):
-            if candidate.is_file():
-                return candidate
-        return None
+    if _is_windows():
+        return _search_windows_exe()
     return None
 
 
@@ -503,7 +684,7 @@ def close_grok_bot() -> int:
 def start_grok_bot() -> bool:
     app = find_app()
     if app is None:
-        raise GrokBotError("未找到本机 Grok Bot 客户端（例如 /Applications/Grok Bot.app）")
+        raise GrokBotError(missing_app_message())
     try:
         if sys.platform == "darwin":
             cmd = [shutil.which("open") or "/usr/bin/open", "-a", str(app)]

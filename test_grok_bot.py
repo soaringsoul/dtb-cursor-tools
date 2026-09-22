@@ -283,6 +283,37 @@ class FindAndStartTest(unittest.TestCase):
         self.assertNotIn("Cursor.app", " ".join(cmd))
         self.assertNotIn("--classic", cmd)
 
+    def test_windows_registry_text_yields_exe_path(self):
+        import grok_bot
+
+        text = (
+            "    InstallLocation    REG_SZ    C:\\Users\\me\\AppData\\Local\\Programs\\Grok Bot\n"
+            "    DisplayIcon    REG_SZ    C:\\Users\\me\\AppData\\Local\\Programs\\Grok Bot\\Grok Bot.exe,0\n"
+        )
+        paths = grok_bot.exe_paths_from_registry_text(text)
+        self.assertIn(
+            r"C:\Users\me\AppData\Local\Programs\Grok Bot\Grok Bot.exe",
+            paths,
+        )
+
+    def test_find_app_windows_uses_install_search(self):
+        import grok_bot
+
+        exe = Path(r"D:\Apps\Grok Bot\Grok Bot.exe")
+        with (
+            patch.object(grok_bot.sys, "platform", "win32"),
+            patch.object(grok_bot, "_search_windows_exe", return_value=exe),
+        ):
+            self.assertEqual(grok_bot.find_app(), exe)
+
+    def test_missing_message_on_windows_names_exe(self):
+        import grok_bot
+
+        with patch.object(grok_bot.sys, "platform", "win32"):
+            text = grok_bot.missing_app_message()
+        self.assertIn("Grok Bot.exe", text)
+        self.assertNotIn("/Applications", text)
+
     def test_start_without_app_raises(self):
         import grok_bot
 
