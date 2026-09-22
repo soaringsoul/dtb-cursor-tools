@@ -95,6 +95,32 @@ def resource_path(rel: str) -> str:
     return os.path.join(base, rel)
 
 
+def dock_icon_path() -> str:
+    """开发时用源码目录里的 PNG。打包后的 .app 走 bundle 图标，这里找不到就跳过。"""
+    for rel in ("assets/icon-1024.png", "icon.icns"):
+        path = resource_path(rel)
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def install_dock_icon() -> None:
+    """用 ./launch.sh 启动时，Dock 默认是 Python 火箭。这里换成应用图标。"""
+    if sys.platform != "darwin":
+        return
+    path = dock_icon_path()
+    if not path:
+        return
+    try:
+        from AppKit import NSApplication, NSImage
+    except Exception:
+        return
+    image = NSImage.alloc().initWithContentsOfFile_(path)
+    if image is None:
+        return
+    NSApplication.sharedApplication().setApplicationIconImage_(image)
+
+
 def build_export_text(store, payload):
     """把前端给的分段 payload 拼成导出 txt。返回 (text, count)；count=0 表示没有可导出的账号。
 
@@ -1006,7 +1032,7 @@ class Api:
         self,
         account_id: str,
         reset_machine_id: bool = False,
-        refresh_first: bool = True,
+        refresh_first: bool = False,
         kick_old_tool: bool = False,
         login_url: str = "",
     ) -> dict:
@@ -1140,6 +1166,7 @@ class Api:
 
 def main() -> None:
     resolve.install()
+    install_dock_icon()
     install_quiet_local_http()
     api = Api()
     window = webview.create_window(

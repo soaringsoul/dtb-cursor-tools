@@ -36,6 +36,7 @@
 
     <nav class="tab-bar glass" role="tablist" aria-label="功能页">
       <button type="button" class="tab-btn active" id="tabAccounts" role="tab" aria-selected="true" aria-controls="paneAccounts" data-tab="accounts">账号管理</button>
+      <button type="button" class="tab-btn" id="tabGuard" role="tab" aria-selected="false" aria-controls="paneGuard" data-tab="guard">本机保护</button>
       <button type="button" class="tab-btn" id="tabAgents" role="tab" aria-selected="false" aria-controls="paneAgents" data-tab="agents">云端 Agent</button>
     </nav>
 
@@ -68,7 +69,7 @@
 
     <section class="glass card" id="accountsCard">
       <div class="card-head">
-          <h2>账号列表 <span class="pill idle" id="countPill">0 个</span> <span class="pill guard" id="guardGlobal" role="button" tabindex="0" title="本机设备保护运行中：点击从右侧打开抽屉。关闭抽屉不会停止保护。" hidden></span></h2>
+          <h2>账号列表 <span class="pill idle" id="countPill">0 个</span> <span class="pill guard" id="guardGlobal" role="button" tabindex="0" title="本机设备保护运行中：点击打开本机保护页。离开该页不会停止保护。" hidden></span></h2>
           <div class="actions">
             <button type="button" class="btn" id="btnShowTokens" aria-pressed="false" title="在账号格分别显示 Worksession token 与 refresh_token，可单独复制">显示 Token</button>
           </div>
@@ -146,6 +147,51 @@
     </section>
     </div>
 
+    <div class="tab-pane" id="paneGuard" role="tabpanel" aria-labelledby="tabGuard" hidden>
+    <section class="glass card guard-page" id="guardCard" aria-labelledby="guardTitle">
+      <div class="drawer-head">
+        <div class="drawer-title">
+          <h2 id="guardTitle">本机保护</h2>
+          <label class="guard-account" for="guardAccountSelect">付费账号
+            <select id="guardAccountSelect" title="只列出已验证的付费账号：Pro / Pro+ / Ultra / Team / Business">
+              <option value="">选择付费账号</option>
+            </select>
+          </label>
+          <p class="drawer-email" id="guardEmail"></p>
+        </div>
+        <div class="drawer-head-acts">
+          <button class="btn" id="guardCancel" title="返回账号列表，不影响已启动的保护">返回列表</button>
+          <button class="btn guard" id="guardPinLocal" hidden title="用本机 Cursor 登录票认 IDE，必要时连同本工具会话一起保留">一键本机保护</button>
+          <button class="btn primary" id="guardStart">启动保护</button>
+          <button class="btn danger" id="guardStop" hidden>停止保护</button>
+        </div>
+      </div>
+      <div class="empty" id="guardEmpty">
+        <span class="empty-mark">保</span>
+        <b>选择一个付费账号</b>
+        <span>下拉框只列出已验证的 Pro / Pro+ / Ultra / Team。也可以从账号列表点「本机保护」。离开本页不会停止已启动的保护。</span>
+      </div>
+      <div id="guardWork" hidden>
+      <div class="drawer-tools" id="guardOpts">
+        <button class="btn tiny" id="guardRefresh" title="重新拉取云端登录设备">刷新</button>
+        <button class="btn tiny" id="guardProbe" title="从本机 Cursor 或已存数据探测并记录 refresh_token">探测票</button>
+        <button class="btn tiny primary" id="guardRefreshLogin" title="只换新的 access_token，不踢设备">刷登录票</button>
+        <button class="btn tiny" id="guardRefreshKick" title="先换新登录票，成功后再立刻踢掉本工具旧客户端。不会动 Cursor IDE">刷票并踢旧</button>
+        <button class="btn tiny" id="guardBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
+        <button class="btn tiny" id="guardDetect" title="比对创建时间，标出刚登录设备，并改勾这些设备">检测登录时间</button>
+        <label class="conc guard-interval" for="guardInterval" title="保护开启后每隔这么多秒拉一次云端设备列表">
+          间隔
+          <input type="number" id="guardInterval" min="5" max="3600" step="5" value="30" />
+          秒
+        </label>
+      </div>
+      <p class="hint guard-diff" id="guardDiff" hidden></p>
+      <p class="hint guard-sub" id="guardSub"></p>
+      <div class="guard-body" id="guardBody"></div>
+      </div>
+    </section>
+    </div>
+
     <div class="tab-pane" id="paneAgents" role="tabpanel" aria-labelledby="tabAgents" hidden>
     <section class="glass card" id="agentsCard">
       <div class="card-head">
@@ -200,10 +246,10 @@
           <li><b>批量操作</b>：验证 / 领取 / 删除 / 保护都<b>只处理勾选</b>的账号，未勾选时按钮不可点。顶部「更多」里还有清空全部。</li>
           <li><b>删除选中</b>：删除勾选的账号；「清空全部」删列表里所有号（需确认个数）。</li>
           <li><b>探测 Refresh / 刷新登录票</b>：从本机 Cursor 或号池整行记录 refresh_token；「刷登录票」向官方 OAuth 换新票，不踢设备。「刷票并踢旧」必须先换票成功，再立刻踢掉本工具原来那条客户端（官方换票会新开一台 Desktop App）；不会踢 Cursor IDE。<b>切号</b>默认先换新票再写入本机 Cursor，这样「本机」会落在最新那台设备上；取消勾选「先刷新登录票」则只切列表里当前这张票。</li>
-          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行「登录票」菜单里的「显示 Token」。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。</li>
+          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行「登录信息」菜单里的「显示 Token」。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。</li>
           <li><b>进控制台</b>：用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending），可直接看用量 / 账单 / 设置。每个账号一个独立浏览器 profile，不影响你日常浏览器的登录。</li>
           <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；可勾选后<b>踢掉所选</b>，也可单台踢下线（与官网 Revoke 相同，成功后应立刻从列表消失）。刷登录票新开的 Desktop App 会标<b>刚换票</b>，并排到本机 / 本工具后面、比其它设备靠前（官方接口通常把它放在列表末尾）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP。若该号正在本机 Cursor 登录，会用本机 JWT 的签发时间去对客户端创建时间：对上恰好一条就标<b>本机</b>（共号多台客户端时也能认），并记住这台机器的机器码与 sessionId；对不上才退回「一条客户端=本机 / 多条=可能是本机」。切号重置机器码后需重新对上一次。</li>
-          <li><b>本机设备保护</b>：账号列表每行点「本机保护」从<b>右侧抽出抽屉</b>；<b>一键本机保护在抽屉里</b>，须先在本机 Cursor 登录该号。保护运行中也是打开抽屉，<b>停止保护在抽屉里</b>。开启前<b>勾选要保留的设备</b>，可用「全选保留 / 全不选 / 只留本机」，再点<b>立即删除未勾选</b>马上踢掉其余设备；也可设置<b>检测间隔（秒，默认 30）</b>后启动持续保护。抽屉里的<b>「检测登录时间」</b>会再弹一层设间隔（默认 120 秒）：把设备创建时间与本机现在比对，落在间隔内的标<b>刚登录</b>，并<b>清空原勾选、只勾这些刚登录设备</b>。<b>一键本机保护</b>用本机 Cursor 登录票的签发时间对上那条客户端，必要时连同本工具自己的会话一起保留，<b>不会再靠刷登录票认设备</b>。刷票会另开一条客户端，旧逻辑会把它当成「本机」把 Cursor 踢掉。对不上唯一一条 Cursor 客户端则不开保护。<b>可同时保护多个账号</b>：表格勾选后点「更多 → 批量保护」，每个号自动保留当前在线设备（有上次勾选则沿用），之后新登录会被踢；「停止选中保护」停勾选的号。顶部「保护中 N 个账号」可打开抽屉，多号时抽屉里可切换。点遮罩或「关闭」只收起抽屉，<b>不会停止保护</b>。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」或再批量开启（会回填上次的勾选与间隔）。</li>
+          <li><b>本机设备保护</b>：账号列表每行点「本机保护」打开<b>本机保护页</b>；<b>一键本机保护在该页里</b>，须先在本机 Cursor 登录该号。保护运行中也是打开该页，<b>停止保护在该页里</b>。开启前<b>勾选要保留的设备</b>，可用「全选保留 / 全不选 / 只留本机」，再点<b>立即删除未勾选</b>马上踢掉其余设备；也可设置<b>检测间隔（秒，默认 30）</b>后启动持续保护。该页里的<b>「检测登录时间」</b>会再弹一层设间隔（默认 120 秒）：把设备创建时间与本机现在比对，落在间隔内的标<b>刚登录</b>，并<b>清空原勾选、只勾这些刚登录设备</b>。<b>一键本机保护</b>用本机 Cursor 登录票的签发时间对上那条客户端，必要时连同本工具自己的会话一起保留，<b>不会再靠刷登录票认设备</b>。刷票会另开一条客户端，旧逻辑会把它当成「本机」把 Cursor 踢掉。对不上唯一一条 Cursor 客户端则不开保护。<b>可同时保护多个账号</b>：表格勾选后点「更多 → 批量保护」，每个号自动保留当前在线设备（有上次勾选则沿用），之后新登录会被踢；「停止选中保护」停勾选的号。顶部「保护中 N 个账号」可打开该页，多号时页里可切换。点「返回列表」或切到别的页只离开本页，<b>不会停止保护</b>。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」或再批量开启（会回填上次的勾选与间隔）。</li>
           <li><b>云端 Agent</b>：在顶部「云端 Agent」页。与登录票账号列表独立。把 Cursor Dashboard → <a href="https://cursor.com/dashboard/api" target="_blank" rel="noopener">API Keys</a> 里创建的用户密钥（<code>crsr_...</code>）粘贴进来，按密钥列出该账号下全部 Cloud Agent（含已归档）。列表每行可单独删除；「一键清理」会<b>永久删除</b>这把密钥下的全部 Agent，不可恢复，删除前会弹出数量确认。密钥只存本机、不上传；列表不显示完整密钥，输入框会记住上次粘贴的内容。</li>
         </ul>
         <p><b>额度怎么看</b></p>
@@ -294,35 +340,6 @@
         <button type="button" class="btn primary" id="switchConfirmOk">确认切号</button>
       </div>
     </div>
-  </div>
-
-  <div class="modal-mask drawer-mask" id="guardMask" hidden>
-    <aside class="glass card drawer" id="guardCard" role="dialog" aria-modal="true" aria-labelledby="guardTitle">
-      <div class="drawer-head">
-        <div class="drawer-title">
-          <h2 id="guardTitle">本机保护</h2>
-          <p class="drawer-email" id="guardEmail"></p>
-        </div>
-        <div class="drawer-head-acts">
-          <button class="btn" id="guardCancel" title="关闭抽屉，不影响已启动的保护">关闭</button>
-          <button class="btn guard" id="guardPinLocal" hidden title="用本机 Cursor 登录票认 IDE，必要时连同本工具会话一起保留">一键本机保护</button>
-          <button class="btn primary" id="guardStart">启动保护</button>
-          <button class="btn danger" id="guardStop" hidden>停止保护</button>
-        </div>
-      </div>
-      <div class="drawer-tools" id="guardOpts">
-        <button class="btn tiny" id="guardRefresh" title="重新拉取云端登录设备">刷新</button>
-        <button class="btn tiny" id="guardBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
-        <button class="btn tiny" id="guardDetect" title="比对创建时间，标出刚登录设备，并改勾这些设备">检测登录时间</button>
-        <label class="conc guard-interval" for="guardInterval" title="保护开启后每隔这么多秒拉一次云端设备列表">
-          间隔
-          <input type="number" id="guardInterval" min="5" max="3600" step="5" value="30" />
-          秒
-        </label>
-      </div>
-      <p class="hint guard-sub" id="guardSub"></p>
-      <div class="guard-body" id="guardBody"></div>
-    </aside>
   </div>
 
   <div class="toast" id="toast" hidden></div>

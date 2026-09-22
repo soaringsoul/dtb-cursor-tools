@@ -298,21 +298,36 @@ def apply_fresh_marks(
     return out
 
 
+def new_ticket_session_ids(before_ids: Any, after_sessions: Any) -> list[str]:
+    """换票后才出现的客户端会话。网页会话不算新票。"""
+    before = {str(x or "").strip() for x in (before_ids or []) if str(x or "").strip()}
+    out: list[str] = []
+    for row in after_sessions or []:
+        if not is_client_session(row):
+            continue
+        sid = str(row.get("sessionId") or "").strip()
+        if sid and sid not in before:
+            out.append(sid)
+    return out
+
+
 def sort_sessions_for_display(sessions: Any) -> list:
-    """展示顺序：本机 → 本工具 → 刚换票 → 可能是本机 → 其余按创建时间新到旧。"""
+    """展示顺序：本机 → 新票 → 本工具 → 刚换票 → 可能是本机 → 其余按创建时间新到旧。"""
     rows = [row for row in (sessions or []) if isinstance(row, dict)]
 
     def _priority(row: dict) -> tuple:
         if row.get("localMark") == "local":
             rank = 0
-        elif row.get("toolMark") == "tool":
+        elif row.get("tokenDiff") == "new":
             rank = 1
-        elif row.get("freshMark") == "fresh":
+        elif row.get("toolMark") == "tool":
             rank = 2
-        elif row.get("localMark") == "maybe-local":
+        elif row.get("freshMark") == "fresh":
             rank = 3
-        else:
+        elif row.get("localMark") == "maybe-local":
             rank = 4
+        else:
+            rank = 5
         created = created_at_ms(row.get("createdAt")) or 0
         return (rank, -created)
 

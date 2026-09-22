@@ -20,7 +20,7 @@ HELP_JOBS = [
     },
     {
         "title": "守设备",
-        "body": "先在本机 Cursor 登录该号，再打开「本机保护」勾选要留的设备。一键本机保护在抽屉里，避免误踢 IDE。",
+        "body": "先在本机 Cursor 登录该号，再打开「本机保护」页勾选要留的设备。一键本机保护在该页里，避免误踢 IDE。",
     },
 ]
 
@@ -185,40 +185,13 @@ def claim_visible(state):
 
 
 def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
-    """登录票弹窗：换票 / 查看 / 危险。与 web/app.js 保持一致。"""
+    """登录信息弹窗：查看 / 危险。换票只在本机保护页。与 web/app.js 保持一致。"""
     account = account or {}
     has_refresh = bool(account.get("hasRefresh"))
     dis = bool(busy)
     pills = ["已有 Refresh"] if has_refresh else ["未探测 Refresh"]
     if token_on:
         pills.append("Token 已展开")
-
-    probe = {
-        "act": "probeRefresh",
-        "label": "探测票",
-        "title": "从本机 Cursor 或已存数据探测并记录 refresh_token",
-        "disabled": dis,
-    }
-    refresh = {
-        "act": "refreshLogin",
-        "label": "刷登录票",
-        "title": "只换新的 access_token，不踢设备",
-        "disabled": dis or not has_refresh,
-    }
-    kick = {
-        "act": "refreshLoginKickOld",
-        "label": "刷票并踢旧",
-        "title": "先换新登录票，成功后再立刻踢掉本工具旧客户端。官方换票会新开一台 Desktop App。不会动 Cursor IDE",
-        "disabled": dis or not has_refresh,
-    }
-    if has_refresh:
-        refresh["cls"] = "primary"
-        probe["span"] = True
-        swap_items = [refresh, kick, probe]
-    else:
-        probe["cls"] = "primary"
-        probe["span"] = True
-        swap_items = [probe, refresh, kick]
 
     view = [
         {
@@ -259,12 +232,6 @@ def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
     return {
         "pills": pills,
         "groups": [
-            {
-                "id": "swap",
-                "title": "换票",
-                "hint": "刷票会多一台 Desktop App；踢旧只踢本工具，不踢 IDE",
-                "items": swap_items,
-            },
             {"id": "view", "title": "查看", "items": view},
             {
                 "id": "danger",

@@ -220,6 +220,21 @@ class StaleToolSessionAfterRefreshTest(unittest.TestCase):
         self.assertEqual(drop, "")
 
 
+class NewTicketSessionIdsTest(unittest.TestCase):
+    def test_only_new_clients(self):
+        after = [
+            {"sessionId": "ide", "type": "client"},
+            {"sessionId": "web-new", "type": "web"},
+            {"sessionId": "desk", "type": "client"},
+        ]
+        ids = login_detect.new_ticket_session_ids(["ide", "old-tool"], after)
+        self.assertEqual(ids, ["desk"])
+
+    def test_empty_when_nothing_new(self):
+        after = [{"sessionId": "ide", "type": "client"}]
+        self.assertEqual(login_detect.new_ticket_session_ids(["ide"], after), [])
+
+
 class SortSessionsForDisplayTest(unittest.TestCase):
     def test_local_then_tool_then_newest(self):
         rows = [
@@ -232,6 +247,18 @@ class SortSessionsForDisplayTest(unittest.TestCase):
         rows[1]["toolMark"] = "tool"
         out = login_detect.sort_sessions_for_display(rows)
         self.assertEqual([x["sessionId"] for x in out], ["ide", "new-tool", "mid", "old"])
+
+    def test_new_ticket_sits_after_local_before_tool(self):
+        rows = [
+            _sess("tool", "2026-09-16T12:00:00.000Z"),
+            _sess("fresh", "2026-09-16T14:00:00.000Z"),
+            _sess("ide", "2026-09-16T10:00:00.000Z"),
+        ]
+        rows[2]["localMark"] = "local"
+        rows[0]["toolMark"] = "tool"
+        rows[1]["tokenDiff"] = "new"
+        out = login_detect.sort_sessions_for_display(rows)
+        self.assertEqual([x["sessionId"] for x in out], ["ide", "fresh", "tool"])
 
     def test_newest_first_when_unmarked(self):
         rows = [

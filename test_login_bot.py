@@ -266,6 +266,8 @@ class LoginBotConfirmCopyTest(unittest.TestCase):
         self.assertNotIn("loginDeepControl", blob)
         self.assertNotIn("Sign in", blob)
         self.assertNotIn("关掉当前 Cursor", blob)
+        self.assertIn("当前这张票", blob)
+        self.assertNotIn("会先换新登录票", blob)
 
     def test_does_not_mention_isolated_authenticator(self):
         import login_bot_confirm

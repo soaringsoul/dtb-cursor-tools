@@ -366,6 +366,14 @@ function sessionTimeLabel(iso) {
   return text || "—";
 }
 
+function createdAgoTag(iso) {
+  const ms = toMs(iso);
+  if (isNaN(ms)) return "";
+  const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  const label = sec < 60 ? `${sec}秒前` : `${Math.floor(sec / 60)}分钟前`;
+  return `<span class="pill mini idle">${esc(label)}</span>`;
+}
+
 // 与 login_detect.py 保持一致：设备创建时间距检测时刻落在窗口内 → 刚登录。
 const LOGIN_DETECT_DEFAULT_SEC = 120;
 const LOGIN_DETECT_MIN_SEC = 5;
@@ -402,10 +410,11 @@ function recentLoginCount(rows, nowMs, windowSec) {
 function sessionDisplayPriority(s) {
   if (!s) return 9;
   if (s.localMark === "local") return 0;
-  if (s.toolMark === "tool") return 1;
-  if (s.freshMark === "fresh") return 2;
-  if (s.localMark === "maybe-local") return 3;
-  return 4;
+  if (s.tokenDiff === "new") return 1;
+  if (s.toolMark === "tool") return 2;
+  if (s.freshMark === "fresh") return 3;
+  if (s.localMark === "maybe-local") return 4;
+  return 5;
 }
 
 function sortSessionsForDisplay(rows) {
@@ -563,6 +572,11 @@ function sessionRowHtml(s, opts) {
   } else if (opts && opts.mineKind && s.type === opts.mineKind && !opts.hasToolMark && !(s && s.freshMark === "fresh")) {
     tags.push(`<span class="pill mini warn" title="本工具用的登录票是${esc(sessionTypeLabel(opts.mineKind))}会话，还没对上唯一一条：同类型里可能有一条是它，踢掉后该号在本工具里会失效">同类·可能是本工具</span>`);
   }
+  if (s && s.tokenDiff === "new") {
+    tags.push(
+      `<span class="pill mini info" title="这次换票之后才出现的客户端。它是新登录票开的 Desktop App，不是 Cursor IDE">新票</span>`
+    );
+  }
   if (s && s.freshMark === "fresh") {
     tags.push(
       `<span class="pill mini ok" title="刷登录票会新开一台 Desktop App。官方列表通常把它排在最后，这里标出来并提前，方便找到">刚换票</span>`
@@ -585,7 +599,7 @@ function sessionRowHtml(s, opts) {
   return (
     `<div class="session-main">` +
     `<div class="session-head">${tags.join(" ")} <span class="sid mono" title="${esc(sid)}">${esc(short)}</span></div>` +
-    `<div class="hint">创建 ${esc(sessionTimeLabel(s.createdAt))}　过期 ${esc(sessionTimeLabel(s.expiresAt))}</div>` +
+    `<div class="hint">创建时间 ${esc(sessionTimeLabel(s.createdAt))} ${createdAgoTag(s.createdAt)}　过期 ${esc(sessionTimeLabel(s.expiresAt))}</div>` +
     `</div>`
   );
 }
@@ -1080,10 +1094,21 @@ function recentLoginSubtext(rows) {
 
 function renderGuardModal() {
   const m = guardModal;
+  paintGuardPage();
   const id = m.id;
-  if (!id) return;
+  if (!id) {
+    const diff = $("guardDiff");
+    if (diff) diff.hidden = true;
+    return;
+  }
   const g = guardStatus[id] || {};
-  const rows = sortSessionsForDisplay(Array.isArray(m.sessions) ? m.sessions : []);
+  const kickedIds = new Set((g.lastKicked || []).map((k) => k && k.sessionId).filter(Boolean));
+  const rows = sortSessionsForDisplay(
+    (Array.isArray(m.sessions) ? m.sessions : []).map((s) => ({
+      ...s,
+      tokenDiff: m.tokenDiffIds && m.tokenDiffIds.has(s.sessionId) ? "new" : null,
+    }))
+  ).filter((s) => !kickedIds.has(s.sessionId));
   const mineKind = tokenSessionKind(m.tokenType);
   const hasToolMark = rows.some((s) => s && s.toolMark === "tool");
   const isLocal = !!(localUserId && id === localUserId);
@@ -1101,7 +1126,7 @@ function renderGuardModal() {
   if (opts) opts.classList.toggle("is-running", !!m.running);
   $("guardRefresh").disabled = !!(m.loading || m.kicking);
   $("guardStart").disabled = !!(m.loading || m.kicking);
-  let html = guardSwitcherHtml();
+  let html = guardSwitcherHtml() + guardDiffHtml(rows);
 
   if (m.running) {
     const keepIds = new Set(g.keepIds || []);
@@ -1110,7 +1135,7 @@ function renderGuardModal() {
     html += `<div class="gstat"><span>启动时间</span><b>${esc(guardTimeLabel(g.startedAt))}</b></div>`;
     html += `<div class="gstat"><span>最近检测</span><b>${esc(guardTimeLabel(g.lastTickAt))}</b></div>`;
     html += `<div class="gstat"><span>检测轮次</span><b>${esc(String(g.tickCount || 0))}</b></div>`;
-    html += `<div class="gstat"><span>当前设备</span><b>${g.sessionCount == null ? "—" : esc(String(g.sessionCount))}</b></div>`;
+    html += `<div class="gstat"><span>当前设备</span><b>${esc(String(rows.length))}</b></div>`;
     html += `<div class="gstat"><span>保留设备</span><b>${esc(String(keepIds.size))}</b></div>`;
     html += `<div class="gstat kicked"><span>已踢下线</span><b>${esc(String(g.kickedCount || 0))} 台</b></div>`;
     html += `</div>`;
@@ -1122,7 +1147,7 @@ function renderGuardModal() {
       html += `<p class="guard-sec">最近踢下线</p><ul class="session-list compact">`;
       for (const k of g.lastKicked) {
         html += `<li class="session-row"><div class="session-main"><div class="session-head">${sessionTypePill(k.type)} <span class="sid mono" title="${esc(k.sessionId || "")}">${esc(String(k.sessionId || "").slice(0, 8))}</span></div>` +
-          `<div class="hint">创建 ${esc(sessionTimeLabel(k.createdAt))}　踢于 ${esc(guardTimeLabel(k.at))}</div></div></li>`;
+          `<div class="hint">创建时间 ${esc(sessionTimeLabel(k.createdAt))} ${createdAgoTag(k.createdAt)}　踢于 ${esc(guardTimeLabel(k.at))}</div></div></li>`;
       }
       html += `</ul>`;
     }
@@ -1149,7 +1174,7 @@ function renderGuardModal() {
       for (const s of rows) {
         const sid = s.sessionId || "";
         const on = m.kickChecked.has(sid) ? " checked" : "";
-        html += `<li class="session-row selectable${on ? " picked" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
+        html += `<li class="session-row selectable${on ? " picked" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}${s && s.tokenDiff === "new" ? " token-diff" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
           `<input type="checkbox" class="kickchk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
           sessionRowHtml(s, { mineKind, hasToolMark, keepIds, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
           `</label></li>`;
@@ -1196,7 +1221,7 @@ function renderGuardModal() {
         const sid = s.sessionId || "";
         const on = m.checked.has(sid) ? " checked" : "";
         html +=
-          `<li class="session-row selectable${on ? " kept" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
+          `<li class="session-row selectable${on ? " kept" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}${s && s.tokenDiff === "new" ? " token-diff" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
           `<input type="checkbox" class="guardchk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
           sessionRowHtml(s, { mineKind, hasToolMark, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
           `<span class="pick-tag ${on ? "ok" : "bad"}">${on ? "保留" : "将被踢"}</span></label></li>`;
@@ -1232,6 +1257,7 @@ function renderGuardModal() {
   if (m.running && g.intervalSeconds != null) fillGuardIntervalSeconds(g.intervalSeconds);
   const detectBtn = $("guardDetect");
   if (detectBtn) detectBtn.disabled = !!m.loading || !id || !!m.kicking;
+  syncGuardSwapButtons(m);
   const browserBtn = $("guardBrowser");
   if (browserBtn) {
     const viaBrowser = m.via === "browser" || m.browserOpen;
@@ -1308,18 +1334,50 @@ async function reloadOpenDeviceLists(id) {
   const sid = String(id || "");
   if (!sid) return;
   const sessionMask = $("sessionMask");
-  const guardMask = $("guardMask");
   if (sessionModal.id === sid && sessionMask && !sessionMask.hidden) {
     await loadSessions();
   }
-  if (guardModal.id === sid && guardMask && !guardMask.hidden) {
+  if (guardModal.id === sid && isGuardPanelOpen()) {
     await loadGuardSessions();
   }
 }
 
 function isGuardPanelOpen() {
-  const el = $("guardMask") || $("guardCard");
-  return !!(el && !el.hidden);
+  const pane = $("paneGuard");
+  return !!(pane && !pane.hidden);
+}
+
+function paintGuardAccountSelect() {
+  const sel = $("guardAccountSelect");
+  if (!sel) return;
+  const paid = orderedAccounts().filter((a) => isPaidPlan(rowState[a.id]));
+  const sig = paid.map((a) => a.id + "\t" + accountMail(a, a.id) + "\t" + (guardStatus[a.id] && guardStatus[a.id].running ? "1" : "0")).join("\n");
+  const current = guardModal.id && paid.some((a) => a.id === guardModal.id) ? guardModal.id : "";
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    const placeholder = paid.length ? "选择付费账号" : "没有已验证的付费账号";
+    sel.innerHTML =
+      `<option value="">${esc(placeholder)}</option>` +
+      paid
+        .map((a) => {
+          const running = !!(guardStatus[a.id] && guardStatus[a.id].running);
+          const label = accountMail(a, a.id) + (running ? " · 保护中" : "");
+          return `<option value="${esc(a.id)}">${esc(label)}</option>`;
+        })
+        .join("");
+  }
+  if (sel.value !== current) sel.value = current;
+}
+
+function paintGuardPage() {
+  const has = !!guardModal.id;
+  const empty = $("guardEmpty");
+  const work = $("guardWork");
+  const acts = document.querySelector("#guardCard .drawer-head-acts");
+  if (empty) empty.hidden = has;
+  if (work) work.hidden = !has;
+  if (acts) acts.hidden = !has;
+  paintGuardAccountSelect();
 }
 
 function startGuardPanelTimer() {
@@ -1333,6 +1391,80 @@ function startGuardPanelTimer() {
 function stopGuardPanelTimer() {
   if (guardModal.timer) clearInterval(guardModal.timer);
   guardModal.timer = null;
+}
+
+function clearTicketDiff() {
+  guardModal.tokenDiffIds = null;
+  guardModal.droppedSessionId = "";
+  guardModal.tokenDiffOn = false;
+}
+
+function guardDiffHtml(rows) {
+  const el = $("guardDiff");
+  if (!guardModal.tokenDiffOn) {
+    if (el) el.hidden = true;
+    return "";
+  }
+  const hasLocal = (rows || []).some((s) => s && s.localMark === "local");
+  let text = hasLocal ? "本机在最上面" : "没对上本机 Cursor，请看标了新票的那一台";
+  const dropped = String(guardModal.droppedSessionId || "");
+  if (dropped) text += ` · 已踢旧客户端 ${dropped.slice(0, 8)}`;
+  if (el) {
+    el.hidden = false;
+    el.textContent = text;
+  }
+  return "";
+}
+
+function syncGuardSwapButtons(m) {
+  const account = accounts.find((a) => a.id === (m && m.id));
+  const hasRefresh = !!(account && account.hasRefresh);
+  const locked = !!(m && (m.loading || m.kicking)) || busy || !(m && m.id);
+  const probe = $("guardProbe");
+  const refresh = $("guardRefreshLogin");
+  const kick = $("guardRefreshKick");
+  if (probe) probe.disabled = locked;
+  if (refresh) refresh.disabled = locked || !hasRefresh;
+  if (kick) kick.disabled = locked || !hasRefresh;
+}
+
+function sessionIdSet(rows) {
+  return new Set((rows || []).map((s) => s && s.sessionId).filter(Boolean));
+}
+
+function applyTicketDiff(id, before, dropped) {
+  if (guardModal.id !== id) return;
+  const after = guardModal.sessions || [];
+  const fresh = [];
+  for (const row of after) {
+    if (!row || row.type !== "client") continue;
+    const sid = row.sessionId;
+    if (sid && !before.has(sid)) fresh.push(sid);
+  }
+  guardModal.tokenDiffIds = new Set(fresh);
+  guardModal.droppedSessionId = dropped || "";
+  guardModal.tokenDiffOn = true;
+  renderGuardModal();
+}
+
+async function guardProbeTicket() {
+  const id = guardModal.id;
+  if (!id) return;
+  await probeRefreshOne(id);
+  syncGuardSwapButtons(guardModal);
+}
+
+async function guardRefreshTicket(kick) {
+  const id = guardModal.id;
+  if (!id) return;
+  const before = sessionIdSet(guardModal.sessions);
+  const res = kick ? await refreshLoginKickOld(id) : await refreshLoginOne(id);
+  if (!res || !res.ok) {
+    clearTicketDiff();
+    renderGuardModal();
+    return;
+  }
+  applyTicketDiff(id, before, kick ? res.droppedSessionId || "" : "");
 }
 
 function firstRunningGuardId() {
@@ -1369,7 +1501,7 @@ function openGuardFromGlobal() {
 async function openGuard(id, opts) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
-  setMainTab("accounts");
+  setMainTab("guard");
   const keepIds = opts && Array.isArray(opts.keepIds) ? opts.keepIds.map((sid) => String(sid || "").trim()).filter(Boolean) : null;
   const same = guardModal.id === id && isGuardPanelOpen();
   if (!same) {
@@ -1389,21 +1521,20 @@ async function openGuard(id, opts) {
     guardModal.kickChecked = new Set();
     guardModal.recentAt = 0;
     guardModal.recentSec = clampLoginDetectSec(settings.loginDetectSec);
+    clearTicketDiff();
   }
   if (keepIds) {
     guardModal.checked = new Set(keepIds);
     guardModal.prechecked = true;
   }
-  const mask = $("guardMask");
-  const card = $("guardCard");
-  if (mask) mask.hidden = false;
-  if (card) card.hidden = false;
+  paintGuardPage();
   await refreshGuardStatus(false);
   if (guardModal.id !== id) return;
   const g = guardStatus[id];
   guardModal.running = !!(g && g.running);
   if (g && g.intervalSeconds != null) fillGuardIntervalSeconds(g.intervalSeconds);
   else if (!same) fillGuardIntervalSeconds(GUARD_INTERVAL_SEC_DEFAULT);
+  paintGuardPage();
   renderGuardModal();
   startGuardPanelTimer();
   await loadGuardSessions();
@@ -1411,11 +1542,9 @@ async function openGuard(id, opts) {
 
 function hideGuard() {
   hideLoginDetect();
-  const mask = $("guardMask");
-  if (mask) mask.hidden = true;
-  const card = $("guardCard");
-  if (card) card.hidden = true;
+  clearTicketDiff();
   stopGuardPanelTimer();
+  setMainTab("accounts");
 }
 
 function onGuardBodyClick(e) {
@@ -1780,8 +1909,8 @@ function rowMainActions(a, st) {
       label: "本机保护",
       cls: guarding ? "guard guarding" : "guard",
       title: guarding
-        ? `打开本机保护抽屉（运行中：已踢 ${(g && g.kickedCount) || 0} 台）。停止保护在抽屉里操作`
-        : "从右侧打开本机保护抽屉：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备",
+        ? `打开本机保护页（运行中：已踢 ${(g && g.kickedCount) || 0} 台）。停止保护在该页里操作`
+        : "打开本机保护页：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备",
     },
   ];
 }
@@ -1794,43 +1923,6 @@ function ticketMenuGroups(a, st) {
   };
   if (tokenOn) spec.pills.push("Token 已展开");
   const dis = !!busy;
-  const probe = {
-    act: "probeRefresh",
-    label: "探测票",
-    title: "从本机 Cursor 或已存数据探测并记录 refresh_token",
-    disabled: dis,
-  };
-  const refresh = {
-    act: "refreshLogin",
-    label: "刷登录票",
-    title: "只换新的 access_token，不踢设备",
-    disabled: dis || !a.hasRefresh,
-  };
-  const kick = {
-    act: "refreshLoginKickOld",
-    label: "刷票并踢旧",
-    title: "先换新登录票，成功后再立刻踢掉本工具旧客户端。官方换票会新开一台 Desktop App。不会动 Cursor IDE",
-    disabled: dis || !a.hasRefresh,
-  };
-  if (a.hasRefresh) {
-    refresh.cls = "primary";
-    probe.span = true;
-    spec.groups.push({
-      id: "swap",
-      title: "换票",
-      hint: "刷票会多一台 Desktop App；踢旧只踢本工具，不踢 IDE",
-      items: [refresh, kick, probe],
-    });
-  } else {
-    probe.cls = "primary";
-    probe.span = true;
-    spec.groups.push({
-      id: "swap",
-      title: "换票",
-      hint: "刷票会多一台 Desktop App；踢旧只踢本工具，不踢 IDE",
-      items: [probe, refresh, kick],
-    });
-  }
   const view = [
     {
       act: "showToken",
@@ -1856,7 +1948,7 @@ function ticketMenuGroups(a, st) {
 }
 
 function ticketMenuHtml(a) {
-  return `<button type="button" class="btn tiny" data-act="ticketMenu" data-id="${esc(a.id)}" title="探测 / 刷票 / Token / 领取 / 进控制台">登录票 ▾</button>`;
+  return `<button type="button" class="btn tiny" data-act="ticketMenu" data-id="${esc(a.id)}" title="Token / 领取 / 进控制台。换票在本机保护页">登录信息 ▾</button>`;
 }
 
 function actionButtonsHtml(id, list, opts) {
@@ -1908,7 +2000,7 @@ function openTicketMenu(id) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
   menuKind = "ticket";
-  fillActionSheet(id, "登录票", accountMail(a, id), ticketMenuGroups(a, rowState[id]));
+  fillActionSheet(id, "登录信息", accountMail(a, id), ticketMenuGroups(a, rowState[id]));
 }
 
 function openRowMenu(id) {
@@ -2158,6 +2250,7 @@ function render() {
   syncSortHeaders();
   syncFilterChrome();
   updateStats();
+  paintGuardAccountSelect();
 }
 
 function syncSelectAll() {
@@ -2418,11 +2511,14 @@ async function probeRefreshOne(id) {
       );
       await loadTokenViews();
       render();
+      return res;
     } else {
       toast("探测失败：" + ((res && res.error) || "未知原因"));
+      return res;
     }
   } catch (e) {
     toast("探测失败：" + String(e));
+    return null;
   }
 }
 
@@ -2442,11 +2538,14 @@ async function refreshLoginOne(id) {
       await reloadOpenDeviceLists(id);
       if (autoVerifyEnabled()) verifyOne(id);
       else render();
+      return res;
     } else {
       toast("刷新失败：" + ((res && res.error) || "未知原因"));
+      return res;
     }
   } catch (e) {
     toast("刷新失败：" + String(e));
+    return null;
   }
 }
 
@@ -2474,11 +2573,14 @@ async function refreshLoginKickOld(id) {
       await reloadOpenDeviceLists(id);
       if (autoVerifyEnabled()) verifyOne(id);
       else render();
+      return res;
     } else {
       toast("刷票并踢旧失败：" + ((res && res.error) || "未知原因"));
+      return res;
     }
   } catch (e) {
     toast("刷票并踢旧失败：" + String(e));
+    return null;
   }
 }
 
@@ -2598,10 +2700,9 @@ function paintSwitchConfirmBody() {
   const a = accounts.find((x) => x.id === id);
   const resetMid = !!($("resetMidChk") && $("resetMidChk").checked);
   const webTok = a && String(a.tokenType || "").toLowerCase() === "web";
-  const refreshFirst =
-    pendingSwitchKind === "loginBot"
-      ? true
-      : !!($("switchRefreshFirstChk") && $("switchRefreshFirstChk").checked);
+  const refreshFirst = pendingSwitchKind === "loginBot"
+    ? false
+    : !!($("switchRefreshFirstChk") && $("switchRefreshFirstChk").checked);
   const copyFn = pendingSwitchKind === "loginBot" ? loginBotConfirmCopy : switchConfirmCopy;
   const body = $("switchConfirmBody");
   if (body) {
@@ -2655,7 +2756,7 @@ function confirmSwitch() {
     refreshFirst && !!($("switchKickOldChk") && $("switchKickOldChk").checked);
   hideSwitchConfirm();
   if (!id) return;
-  if (kind === "loginBot") loginBot(id, true, false);
+  if (kind === "loginBot") loginBot(id, false, false);
   else switchAccount(id, refreshFirst, kickOld);
 }
 
@@ -3240,34 +3341,49 @@ async function saveSettings(patch) {
   }
 }
 
-function currentMainTab() {
-  return settings.mainTab === "agents" ? "agents" : "accounts";
-}
-
 function setMainTab(name, persist) {
-  const tab = name === "agents" ? "agents" : "accounts";
-  const accountsOn = tab === "accounts";
-  const tabAccounts = $("tabAccounts");
-  const tabAgents = $("tabAgents");
-  const paneAccounts = $("paneAccounts");
-  const paneAgents = $("paneAgents");
-  if (tabAccounts) {
-    tabAccounts.classList.toggle("active", accountsOn);
-    tabAccounts.setAttribute("aria-selected", accountsOn ? "true" : "false");
+  const tab = name === "agents" || name === "guard" ? name : "accounts";
+  const buttons = {
+    accounts: $("tabAccounts"),
+    guard: $("tabGuard"),
+    agents: $("tabAgents"),
+  };
+  const panes = {
+    accounts: $("paneAccounts"),
+    guard: $("paneGuard"),
+    agents: $("paneAgents"),
+  };
+  for (const key of ["accounts", "guard", "agents"]) {
+    const on = key === tab;
+    const btn = buttons[key];
+    const pane = panes[key];
+    if (btn) {
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    if (pane) pane.hidden = !on;
   }
-  if (tabAgents) {
-    tabAgents.classList.toggle("active", !accountsOn);
-    tabAgents.setAttribute("aria-selected", accountsOn ? "false" : "true");
+  if (tab === "guard") {
+    paintGuardPage();
+    if (guardModal.id) startGuardPanelTimer();
+  } else {
+    stopGuardPanelTimer();
   }
-  if (paneAccounts) paneAccounts.hidden = !accountsOn;
-  if (paneAgents) paneAgents.hidden = accountsOn;
   if (persist !== false && settings.mainTab !== tab) saveSettings({ mainTab: tab });
 }
 
 function onMainTabClick(e) {
   const btn = e.target.closest("[data-tab]");
   if (!btn) return;
-  setMainTab(btn.getAttribute("data-tab"));
+  const name = btn.getAttribute("data-tab");
+  if (name === "guard") {
+    const id = guardModal.id || firstRunningGuardId();
+    if (id) {
+      openGuard(id);
+      return;
+    }
+  }
+  setMainTab(name);
 }
 
 function fmtAgentTime(iso) {
@@ -3526,7 +3642,7 @@ function paintHelpJobs() {
     helpJobs = [
       { title: "看额度", body: "导入或探测本机账号后点「验证」，看 Bot / Auto / 高级 三池和到期日。验证只读，不会领取。" },
       { title: "切到本机", body: "点该号「切号」。会先关掉当前 Cursor，写入登录态后再打开。默认先换新登录票。" },
-      { title: "守设备", body: "先在本机 Cursor 登录该号，再打开「本机保护」勾选要留的设备。一键本机保护在抽屉里，避免误踢 IDE。" },
+      { title: "守设备", body: "先在本机 Cursor 登录该号，再打开「本机保护」页勾选要留的设备。一键本机保护在该页里，避免误踢 IDE。" },
     ];
   }
   box.innerHTML = helpJobs
@@ -3735,9 +3851,14 @@ async function boot() {
   $("sessionBody").addEventListener("click", onSessionBodyClick);
   $("sessionBody").addEventListener("change", onSessionBodyChange);
   $("guardCancel").addEventListener("click", hideGuard);
-  $("guardMask").addEventListener("click", (e) => {
-    if (e.target === $("guardMask")) hideGuard();
-  });
+  const guardAccountSelect = $("guardAccountSelect");
+  if (guardAccountSelect) {
+    guardAccountSelect.addEventListener("change", () => {
+      const id = guardAccountSelect.value;
+      if (!id || id === guardModal.id) return;
+      openGuard(id);
+    });
+  }
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if ($("menuMask") && !$("menuMask").hidden) {
@@ -3755,6 +3876,12 @@ async function boot() {
     if (isGuardPanelOpen()) hideGuard();
   });
   $("guardRefresh").addEventListener("click", () => loadGuardSessions());
+  const guardProbe = $("guardProbe");
+  if (guardProbe) guardProbe.addEventListener("click", () => guardProbeTicket());
+  const guardRefreshLogin = $("guardRefreshLogin");
+  if (guardRefreshLogin) guardRefreshLogin.addEventListener("click", () => guardRefreshTicket(false));
+  const guardRefreshKick = $("guardRefreshKick");
+  if (guardRefreshKick) guardRefreshKick.addEventListener("click", () => guardRefreshTicket(true));
   $("guardDetect").addEventListener("click", openLoginDetect);
   $("guardBrowser").addEventListener("click", () => openSessionsPage(guardModal.id));
   $("guardBody").addEventListener("click", onGuardBodyClick);
@@ -3820,7 +3947,7 @@ async function boot() {
   }
   $("autoVerifyChk").checked = settings.autoVerify !== false;
   setImportPanelOpen(!!settings.importOpen, false);
-  setMainTab(currentMainTab(), false);
+  setMainTab("accounts", false);
   applyNoticeHidden();
   await applyAppInfo();
   syncBatchButtons();

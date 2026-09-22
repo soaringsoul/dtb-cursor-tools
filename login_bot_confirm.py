@@ -12,7 +12,7 @@ def confirm_lines(
     *,
     reset_machine_id: bool = False,
     web_token: bool = False,
-    refresh_first: bool = True,
+    refresh_first: bool = False,
     kick_old_tool: bool = False,
 ) -> list[str]:
     who = str(email or "").strip() or "该账号"
@@ -37,7 +37,7 @@ def confirm_message(
     *,
     reset_machine_id: bool = False,
     web_token: bool = False,
-    refresh_first: bool = True,
+    refresh_first: bool = False,
     kick_old_tool: bool = False,
 ) -> str:
     return "\n".join(

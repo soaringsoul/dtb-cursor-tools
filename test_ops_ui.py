@@ -173,6 +173,14 @@ class HtmlContractTest(unittest.TestCase):
             'class="help-scroll"',
             'class="help-foot"',
             'id="guardPinLocal"',
+            'id="tabGuard"',
+            'id="paneGuard"',
+            'id="guardEmpty"',
+            'id="guardAccountSelect"',
+            'id="guardProbe"',
+            'id="guardRefreshLogin"',
+            'id="guardRefreshKick"',
+            'id="guardDiff"',
             'id="toolbarMore"',
             'id="btnClear"',
         ):
@@ -207,24 +215,13 @@ class HtmlContractTest(unittest.TestCase):
 
 
 class TicketMenuGroupsTest(unittest.TestCase):
-    def test_groups_are_swap_view_danger(self):
+    def test_groups_are_view_and_danger_without_swap(self):
         g = ops_ui.ticket_menu_groups({"id": "u", "hasRefresh": True})
-        self.assertEqual([x["id"] for x in g["groups"]], ["swap", "view", "danger"])
-
-    def test_refresh_is_primary_when_has_refresh(self):
-        g = ops_ui.ticket_menu_groups({"hasRefresh": True})
-        swap = {i["act"]: i for i in g["groups"][0]["items"]}
-        self.assertIn("primary", swap["refreshLogin"].get("cls") or "")
-        self.assertFalse(swap["refreshLogin"].get("disabled"))
-        self.assertFalse(swap["refreshLoginKickOld"].get("disabled"))
-        self.assertNotIn("primary", swap["probeRefresh"].get("cls") or "")
-
-    def test_probe_is_primary_when_no_refresh(self):
-        g = ops_ui.ticket_menu_groups({"hasRefresh": False})
-        swap = {i["act"]: i for i in g["groups"][0]["items"]}
-        self.assertIn("primary", swap["probeRefresh"].get("cls") or "")
-        self.assertTrue(swap["refreshLogin"]["disabled"])
-        self.assertTrue(swap["refreshLoginKickOld"]["disabled"])
+        self.assertEqual([x["id"] for x in g["groups"]], ["view", "danger"])
+        acts = [i["act"] for group in g["groups"] for i in group["items"]]
+        self.assertNotIn("refreshLogin", acts)
+        self.assertNotIn("refreshLoginKickOld", acts)
+        self.assertNotIn("probeRefresh", acts)
 
     def test_remove_is_alone_in_danger(self):
         g = ops_ui.ticket_menu_groups({})
@@ -234,14 +231,14 @@ class TicketMenuGroupsTest(unittest.TestCase):
         self.assertTrue(danger["items"][0].get("span"))
 
     def test_claim_hidden_when_already_ok(self):
-        view = [i["act"] for i in ops_ui.ticket_menu_groups({}, {"kind": "ok"})["groups"][1]["items"]]
+        view = [i["act"] for i in ops_ui.ticket_menu_groups({}, {"kind": "ok"})["groups"][0]["items"]]
         self.assertNotIn("claim", view)
-        view2 = [i["act"] for i in ops_ui.ticket_menu_groups({}, {"kind": "card"})["groups"][1]["items"]]
+        view2 = [i["act"] for i in ops_ui.ticket_menu_groups({}, {"kind": "card"})["groups"][0]["items"]]
         self.assertIn("claim", view2)
 
     def test_token_label_toggles_and_stays_open(self):
-        off = {i["act"]: i for i in ops_ui.ticket_menu_groups({}, token_on=False)["groups"][1]["items"]}
-        on = {i["act"]: i for i in ops_ui.ticket_menu_groups({}, token_on=True)["groups"][1]["items"]}
+        off = {i["act"]: i for i in ops_ui.ticket_menu_groups({}, token_on=False)["groups"][0]["items"]}
+        on = {i["act"]: i for i in ops_ui.ticket_menu_groups({}, token_on=True)["groups"][0]["items"]}
         self.assertEqual(off["showToken"]["label"], "显示 Token")
         self.assertEqual(on["showToken"]["label"], "隐藏 Token")
         self.assertTrue(off["showToken"].get("keepOpen"))
