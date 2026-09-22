@@ -75,28 +75,38 @@ python3 -m unittest test_login_sessions.py test_device_guard.py test_browser_reu
 
 ## 打包（Nuitka 编译 + 安装包）
 
-双击或命令行运行：
+**Windows：**
 
 ```bat
-build.bat
+build_win.bat
 ```
 
 产物：
 
 - `nuitka-out\SandClaimer-<版本>.exe` —— 单文件绿色版，双击即用（文件名带版本号，如 `SandClaimer-1.1.6.exe`）。
-- `installer\SandClaimer-Setup-<版本>.exe` —— 中文安装向导，装到 Program Files 并建开始菜单/桌面快捷方式。
+- `installer\SandClaimer-Setup-<版本>.exe` —— 中文安装向导，装到 Program Files 并建开始菜单/桌面快捷方式（需本机已装 Inno Setup 6）。
 
-> 版本号统一取自 `sand_patch.py` 的 `TOOL_VERSION`，`build.bat` / `make_share.ps1` 会自动读取并写进产物文件名，无需多处手改。
+`build.bat` 会转调 `build_win.bat`。
 
-`build.bat` 会依次：装依赖 → 修补 Nuitka 的 pywebview 插件 → 生成图标 → Nuitka 编译 → Inno Setup 打安装包。
+**macOS：**
+
+```bash
+./build_mac.sh
+```
+
+产物 `SandClaimer-<版本>.dmg`（内含 `cursor账号管理器.app`）。
+
+> 版本号统一取自 `sand_patch.py` 的 `TOOL_VERSION`，`build_win.bat` / `build_mac.sh` / `make_share.ps1` 会自动读取并写进产物文件名，无需多处手改。
+
+`build_win.bat` 会依次：装依赖 → 修补 Nuitka 的 pywebview 插件 → 生成图标 → Nuitka 编译 → Inno Setup 打安装包。
 
 ### 为什么用 Nuitka（而非 PyInstaller）
 
 - **启动更快**：Python 源码被编译成 C/机器码，不是解释执行的 `.pyc`。
 - **天然混淆/加密**：产物是原生机器码，源码不可还原；onefile 运行时把负载解压到临时目录再执行（相当于加密封装），比 PyInstaller 的可直接解包 `.pyc` 强得多。
-- `build.bat` 用 `--mingw64 --assume-yes-for-downloads`：首次编译 Nuitka 会自动下载并缓存 MinGW64，无需手动装 MSVC；之后走缓存会快很多。
+- `build_win.bat` 用 `--mingw64 --assume-yes-for-downloads`：首次编译 Nuitka 会自动下载并缓存 MinGW64，无需手动装 MSVC；之后走缓存会快很多。
 
-> `patch_plugin.py`：Nuitka 4.1.3 的 pywebview 插件在 Windows 白名单里漏了 pywebview 6.2.x 新增的 `webview.platforms.win32`，会导致打包后 winforms 后端起不来。该脚本幂等地把它补进白名单，`build.bat` 已自动调用。
+> `patch_plugin.py`：Nuitka 4.1.3 的 pywebview 插件在 Windows 白名单里漏了 pywebview 6.2.x 新增的 `webview.platforms.win32`，会导致打包后 winforms 后端起不来。该脚本幂等地把它补进白名单，`build_win.bat` 已自动调用。
 >
 > `ChineseSimplified.isl`：安装向导的简体中文语言包（Inno Setup 默认不含）。
 
@@ -154,5 +164,7 @@ sand-claimer/
 ├─ ChineseSimplified.isl # 安装向导简体中文语言包
 ├─ icon.ico              # 应用图标（由 make_icon.py 生成）
 ├─ requirements.txt
-└─ build.bat             # 一键：编译 + 打安装包
+├─ build_win.bat         # Windows 一键：Nuitka 编译 + 打安装包
+├─ build_mac.sh          # macOS 一键：Nuitka 编译 .app + .dmg
+└─ build.bat             # 转调 build_win.bat
 ```

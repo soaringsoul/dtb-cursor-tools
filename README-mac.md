@@ -23,11 +23,18 @@ python3 app.py
 
 ## 一键打包成 .app / .dmg（在 Mac 上做）
 
-Windows 上无法编译出 Mac 程序，必须在 Mac 上打。**双击 `build-mac-app.command`** 即可一键完成：
-建虚拟环境 → 装依赖 → 生成图标 → PyInstaller 打 `.app` → 写版本号 → ad-hoc 签名 → 生成 `.dmg`。
+Windows 上无法编译出 Mac 程序，必须在 Mac 上打。
 
-产物是同目录下的 **`SandClaimer-<版本>.dmg`**（版本号自动取自 `sand_patch.py` 的 `TOOL_VERSION`）。
-把这个 `.dmg` 发群，Mac 用户下载 → 打开 → 拖进「应用程序」→ 双击运行（首次右键图标 → 打开绕过 Gatekeeper）。
+```bash
+chmod +x build_mac.sh
+./build_mac.sh
+```
+
+产物：`SandClaimer-<版本>.dmg`（项目根目录，版本取自 `sand_patch.py` 的 `TOOL_VERSION`）。也可用 Finder 双击 `build-mac-nuitka.command`（内部调用同一脚本）。
+
+PyInstaller 备用：双击 `build-mac-app.command`。
+
+把 `.dmg` 发群，Mac 用户下载 → 打开 → 拖进「应用程序」→ 双击运行（首次右键图标 → 打开绕过 Gatekeeper）。
 
 > 首次双击 `.command` 若提示“来自身份不明的开发者”：右键该文件 → 打开；或先在终端执行一次 `chmod +x *.command`。
 

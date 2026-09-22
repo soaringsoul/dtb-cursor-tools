@@ -9,6 +9,7 @@ import datetime
 import errno
 import json
 import os
+import socket
 import socketserver
 import subprocess
 import sys
@@ -23,10 +24,13 @@ import sand_patch
 import browser_login
 import device_guard
 import local_cursor
+import grok_bot
 import api_key_store
 from accounts import AccountStore
 from accounts import format_export_line
 import quit_confirm
+import login_detect
+import ops_ui
 from sand_api import claim as claim_token
 from sand_api import get_sand_status
 from sand_api import get_status
@@ -292,19 +296,110 @@ class Api:
             client_id = item.get("clientId")
         if not refresh:
             return {"ok": False, "error": "缺少 refresh_token，请先「探测 Refresh」或导入号池整行"}
-        result = sand_api.refresh_login_tokens(refresh, client_id)
+        result = sand_api.refresh_login_tokens_with_fallback(refresh, item.get("token"), client_id)
         if not result.get("ok"):
             return result
         access = result["accessToken"]
-        new_refresh = result.get("refreshToken") or refresh
+        new_refresh = result.get("refreshToken") or access
         new_client = result.get("clientId") or client_id
         self._store.update_login_tokens(account_id, access, refresh_token=new_refresh, client_id=new_client)
         return {
             "ok": True,
             "tokenType": result.get("tokenType"),
             "exp": result.get("exp"),
+            "usedAccessAsRefresh": bool(result.get("usedAccessAsRefresh")),
+            "accessToken": access,
             "accounts": self._store.list(),
         }
+
+    def refresh_login_kick_old(self, account_id: str) -> dict:
+        """换新登录票；只有换票成功后才立刻踢掉本工具旧客户端，绝不踢 Cursor IDE。"""
+        item = self._store.get(account_id)
+        if not item:
+            return {"ok": False, "error": "账号不存在"}
+        old_claims: dict = {}
+        if item.get("token"):
+            try:
+                _ouid, _ojwt, old_claims = parse_token(item["token"])
+            except Exception:
+                old_claims = {}
+        result = self.refresh_login_one(account_id)
+        if not result.get("ok"):
+            return result
+        dropped = self._drop_stale_tool_session_after_refresh(
+            account_id, old_claims, result.get("accessToken") or ""
+        )
+        out = dict(result)
+        out.pop("accessToken", None)
+        out["droppedSessionId"] = dropped
+        if not dropped:
+            out["kickError"] = "换票已成功，但没对上要踢的旧客户端（可能官方没新开会话，或对上的是本机 Cursor）"
+        return out
+
+    def _drop_stale_tool_session_after_refresh(self, account_id: str, old_claims: dict, new_access: str) -> str:
+        """换票会新开一台 Desktop App：踢掉本工具原来那条，绝不踢 Cursor IDE。"""
+        try:
+            _uid, _jwt, new_claims = parse_token(new_access)
+        except Exception:
+            return ""
+        try:
+            listed = self.list_sessions(account_id)
+        except Exception:
+            return ""
+        sessions = list(listed.get("sessions") or [])
+        ide = ""
+        try:
+            local = self.local_identity()
+            if local.get("ok") and local.get("userId") == account_id:
+                ide = self._resolve_pinned_local_session(account_id, sessions)
+        except Exception:
+            ide = ""
+        drop = login_detect.stale_tool_session_id_after_refresh(old_claims, new_claims, sessions, ide)
+        if not drop:
+            return ""
+        kind = "SESSION_TYPE_CLIENT"
+        for row in sessions:
+            if str(row.get("sessionId") or "").strip() == drop:
+                kind = str(row.get("typeRaw") or row.get("type") or kind)
+                break
+        try:
+            self.revoke_session(account_id, drop, kind)
+        except Exception:
+            return ""
+        new_sid = login_detect.match_session_id_by_jwt_time(sessions, new_claims)
+        self._replace_guard_keep_session(account_id, drop, new_sid)
+        return drop
+
+    def _replace_guard_keep_session(self, account_id: str, old_sid: str, new_sid: str) -> None:
+        """保护若在跑：把旧本工具会话从保留名单换成新的，并换上新票。"""
+        try:
+            if not self._guard.is_running(account_id):
+                return
+        except Exception:
+            return
+        old = str(old_sid or "").strip()
+        new = str(new_sid or "").strip()
+        keep = [str(x or "").strip() for x in (self._guard.saved_keep_ids(account_id) or []) if str(x or "").strip()]
+        if old:
+            keep = [new if x == old else x for x in keep]
+        if new and new not in keep:
+            keep.append(new)
+        keep = [x for x in keep if x]
+        if not keep:
+            return
+        user_id, jwt, _claims, _item, error = self._auth_of(account_id)
+        if error:
+            return
+        st = {}
+        try:
+            st = (self._guard.status() or {}).get(str(account_id) or "") or {}
+        except Exception:
+            st = {}
+        seconds = st.get("intervalSeconds") or 30
+        try:
+            self._guard.start(account_id, user_id, jwt, keep, interval_seconds=seconds)
+        except Exception:
+            return
 
     def local_identity(self) -> dict:
         """本机 Cursor 当前登录的 user id / 邮箱。未登录返回 ok=False。不写入账号表。"""
@@ -317,6 +412,50 @@ class Api:
             return {"ok": False, "userId": None, "email": None}
         email = acct.get("email") or claims.get("email")
         return {"ok": True, "userId": user_id, "email": email}
+
+    def _local_hostname(self) -> str:
+        try:
+            return socket.gethostname() or ""
+        except Exception:
+            return ""
+
+    def _remember_local_session(self, account_id: str, session_id: str) -> None:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        binds = _read_json("local_session_bind.json", {})
+        if not isinstance(binds, dict):
+            binds = {}
+        mid = str((local_cursor.read_machine_ids() or {}).get("machineId") or "")
+        binds[str(account_id)] = {
+            "sessionId": sid,
+            "machineId": mid,
+            "hostname": self._local_hostname(),
+            "labeledAt": int(time.time()),
+        }
+        _write_json("local_session_bind.json", binds)
+
+    def _resolve_pinned_local_session(self, account_id: str, sessions) -> str:
+        """用本机 Cursor JWT 的 time 对云端客户端 createdAt；对不上则回退本机记住的 sessionId。"""
+        acct = local_cursor.read_local_account()
+        claims_local: dict = {}
+        if acct and acct.get("token"):
+            try:
+                _uid, _jwt, claims_local = parse_token(acct["token"])
+            except Exception:
+                claims_local = {}
+        binds = _read_json("local_session_bind.json", {})
+        if not isinstance(binds, dict):
+            binds = {}
+        mid = str((local_cursor.read_machine_ids() or {}).get("machineId") or "")
+        saved = binds.get(str(account_id) or "")
+        saved_sid = ""
+        if isinstance(saved, dict) and (not mid or saved.get("machineId") == mid):
+            saved_sid = str(saved.get("sessionId") or "")
+        pinned = login_detect.resolve_local_session_id(sessions, claims_local, saved_sid)
+        if pinned:
+            self._remember_local_session(account_id, pinned)
+        return pinned
 
     def list_accounts(self) -> list:
         return self._store.list()
@@ -538,7 +677,27 @@ class Api:
             block = sand_api.empty_session_block(str(exc))
         local = self.local_identity()
         is_local = bool(local.get("ok") and local.get("userId") == account_id)
-        block["sessions"] = sand_api.annotate_local_sessions(block.get("sessions"), is_local)
+        pinned = ""
+        if is_local:
+            pinned = self._resolve_pinned_local_session(account_id, block.get("sessions") or [])
+        tool_sid = ""
+        if item and item.get("token"):
+            try:
+                _tuid, _tjwt, tool_claims = parse_token(item["token"])
+                tool_sid = login_detect.match_session_id_by_jwt_time(
+                    block.get("sessions") or [], tool_claims
+                )
+            except Exception:
+                tool_sid = ""
+        block["sessions"] = login_detect.sort_sessions_for_display(
+            sand_api.annotate_local_sessions(
+                block.get("sessions"),
+                is_local,
+                local_session_id=pinned or None,
+                local_host=self._local_hostname() if pinned else None,
+                tool_session_id=tool_sid or None,
+            )
+        )
         label = (item or {}).get("label") or ""
         email = label if "@" in label else (claims.get("email") or user_id)
         return {
@@ -631,6 +790,72 @@ class Api:
             res["skipped"] = False
         return res
 
+    def device_guard_pin_local(self, account_id: str, interval_seconds=30) -> dict:
+        """一键本机保护：用本机 Cursor JWT 认 IDE 会话，必要时连同本工具会话一起保留。不刷票认设备。"""
+        local = self.local_identity()
+        if not (local.get("ok") and local.get("userId") == account_id):
+            return {"ok": False, "error": "请先在本机 Cursor 登录这个号"}
+
+        listed = self.list_sessions(account_id)
+        sessions = list(listed.get("sessions") or [])
+        session_count = len(sessions)
+        status = {}
+        try:
+            status = (self._guard.status() or {}).get(str(account_id) or "") or {}
+        except Exception:
+            status = {}
+        if not listed.get("ok"):
+            return {
+                "ok": False,
+                "error": listed.get("error") or "读取设备失败",
+                "keepIds": [],
+                "beforeCount": session_count,
+                "afterCount": session_count,
+                "status": status,
+            }
+
+        ide_sid = self._resolve_pinned_local_session(account_id, sessions)
+        tool_sid = ""
+        item = self._store.get(account_id) or {}
+        raw_token = item.get("token")
+        if raw_token:
+            try:
+                _uid, _jwt, claims = parse_token(raw_token)
+                tool_sid = login_detect.match_session_id_by_jwt_time(sessions, claims)
+            except Exception:
+                tool_sid = ""
+        present = [str(row.get("sessionId") or "").strip() for row in sessions if isinstance(row, dict)]
+        keep = login_detect.keep_session_ids_for_local_guard(ide_sid, tool_sid, present)
+        if not keep:
+            return {
+                "ok": False,
+                "error": "认不出本机 Cursor 那条客户端（签发时间没对上唯一一台），未开启保护",
+                "keepIds": [],
+                "beforeCount": session_count,
+                "afterCount": session_count,
+                "status": status,
+            }
+
+        self._remember_local_session(account_id, ide_sid)
+        start = self.device_guard_start(account_id, keep, interval_seconds)
+        if not start.get("ok"):
+            return {
+                "ok": False,
+                "error": start.get("error") or "开启保护失败",
+                "keepIds": keep,
+                "beforeCount": session_count,
+                "afterCount": session_count,
+                "status": start.get("status") or status,
+            }
+        return {
+            "ok": True,
+            "keepIds": keep,
+            "beforeCount": session_count,
+            "afterCount": session_count,
+            "status": start.get("status") or status,
+            "error": "",
+        }
+
     def device_guard_stop(self, account_id: str) -> dict:
         try:
             return self._guard.stop(account_id)
@@ -650,19 +875,60 @@ class Api:
         except Exception:
             return {}
 
-    def switch_account(self, account_id: str, reset_machine_id: bool = False) -> dict:
-        """一键切号：关闭本机 Cursor → 写入所选账号登录态（可选重置机器码）→ 重开 Cursor。"""
+    def _prepare_writable_token(
+        self,
+        account_id: str,
+        refresh_first: bool = True,
+        kick_old_tool: bool = False,
+        write_target: str = "Cursor",
+        exchange_web: bool = True,
+    ) -> dict:
+        """换票 + 探活 + 网站票兑换。成功后给出可写入客户端的 jwt，不关任何应用。"""
         item = self._store.get(account_id)
         if not item:
             return {"ok": False, "error": "账号不存在"}
+        refreshed = False
+        used_access = False
+        dropped = ""
+        kick_error = ""
+        if refresh_first:
+            if not item.get("refreshToken"):
+                probe = self.probe_refresh_one(account_id)
+                if not probe.get("ok"):
+                    err = str(probe.get("error") or "未能探测到 refresh_token")
+                    return {
+                        "ok": False,
+                        "error": err
+                        + f" 未写入 {write_target}。可取消勾选「先刷新登录票」后仅切当前票。",
+                    }
+                item = self._store.get(account_id) or item
+            old_claims: dict = {}
+            if item.get("token"):
+                try:
+                    _ouid, _ojwt, old_claims = parse_token(item["token"])
+                except Exception:
+                    old_claims = {}
+            result = self.refresh_login_one(account_id)
+            if not result.get("ok"):
+                return result
+            refreshed = True
+            used_access = bool(result.get("usedAccessAsRefresh"))
+            new_access = result.get("accessToken") or ""
+            if kick_old_tool:
+                dropped = self._drop_stale_tool_session_after_refresh(
+                    account_id, old_claims, new_access
+                )
+                if not dropped:
+                    kick_error = (
+                        "换票已成功，但没对上要踢的旧客户端（可能官方没新开会话，或对上的是本机 Cursor）"
+                    )
+            item = self._store.get(account_id) or item
         try:
             user_id, jwt, claims = parse_token(item["token"])
         except Exception as exc:
             return {"ok": False, "error": f"token 解析失败：{exc}"}
         label = item.get("label") or ""
         email = label if "@" in label else (claims.get("email") or user_id)
-        # 闸①（借鉴 kc-cursor cursor-manager）：切进一个死号 = 设置里有号、一发就重登（等于没切）。
-        # 先本地看 exp（离线、即时），再联网探活；只在明确失效（401/403）时拦，网络问题不拦。
         exp = sand_api.token_exp(item["token"])
         if exp is not None and exp <= int(time.time()):
             return {
@@ -676,11 +942,9 @@ class Api:
                 "error": "该账号已失效或被限（服务端不认这张登录票：401/403 或无会话）：切了也登不上（等于没切）。"
                 "请换一个有效号，或重新导入该号的新 token。",
             }
-        # 网站会话票（type=web）直接写进客户端对话层不认（能显示账号、一发消息就要重登）。
-        # 先按官方深度登录换成客户端 session 票；换不到再回退原样写（至少不比以前差）。
         refresh_jwt = item.get("refreshToken") or None
         exchanged = False
-        if str(claims.get("type") or "").lower() == "web":
+        if exchange_web and str(claims.get("type") or "").lower() == "web":
             try:
                 access, refresh = sand_api.exchange_web_to_session(item["token"])
             except Exception:
@@ -697,6 +961,117 @@ class Api:
                 }
         elif not refresh_jwt:
             refresh_jwt = jwt
+        return {
+            "ok": True,
+            "jwt": jwt,
+            "refreshJwt": refresh_jwt,
+            "email": email,
+            "userId": user_id,
+            "refreshed": refreshed,
+            "usedAccessAsRefresh": used_access,
+            "droppedSessionId": dropped,
+            "kickError": kick_error,
+            "exchanged": exchanged,
+        }
+
+    def _attach_session_block(self, out: dict, account_id: str, *, pin_local: bool) -> dict:
+        try:
+            listed = self.list_sessions(account_id)
+        except Exception as exc:
+            action = "已切号" if pin_local else "已登录 Bot"
+            out["warning"] = f"{action}，但设备列表未刷新：{exc}"
+            return out
+        if isinstance(listed, dict):
+            for key in (
+                "sessions",
+                "sessionCount",
+                "sessionClientCount",
+                "sessionWebCount",
+                "sessionError",
+            ):
+                if key in listed:
+                    out[key] = listed[key]
+            if listed.get("sessionError"):
+                out["warning"] = str(listed.get("sessionError"))
+            if pin_local:
+                try:
+                    out["pinnedSessionId"] = self._resolve_pinned_local_session(
+                        account_id, listed.get("sessions") or []
+                    ) or ""
+                except Exception:
+                    out["pinnedSessionId"] = ""
+        return out
+
+    def login_bot(
+        self,
+        account_id: str,
+        reset_machine_id: bool = False,
+        refresh_first: bool = True,
+        kick_old_tool: bool = False,
+        login_url: str = "",
+    ) -> dict:
+        """写入 Grok Bot 自带 Cursor 账户列表并重启 Bot，不关闭、不改写 Cursor。"""
+        del reset_machine_id  # 登录 Bot 不改 Cursor 机器码
+        del login_url  # 不再走 loginDeepControl
+        prep = self._prepare_writable_token(
+            account_id,
+            refresh_first,
+            kick_old_tool,
+            write_target="Grok Bot",
+            exchange_web=True,
+        )
+        if not prep.get("ok"):
+            return prep
+        if grok_bot.find_app() is None:
+            return {
+                "ok": False,
+                "error": "未找到本机 Grok Bot 客户端（例如 /Applications/Grok Bot.app）。Cursor 未关闭。",
+            }
+        try:
+            grok_bot.close_grok_bot()
+            grok_bot.write_local_account(
+                prep["jwt"],
+                prep.get("refreshJwt") or prep["jwt"],
+                email=prep.get("email"),
+                user_id=prep.get("userId"),
+            )
+            grok_bot.start_grok_bot()
+        except grok_bot.GrokBotError as exc:
+            return {"ok": False, "error": str(exc)}
+        out = {
+            "ok": True,
+            "email": prep.get("email"),
+            "resetMachineId": False,
+            "exchanged": bool(prep.get("exchanged")),
+            "refreshed": bool(prep.get("refreshed")),
+            "usedAccessAsRefresh": bool(prep.get("usedAccessAsRefresh")),
+            "droppedSessionId": prep.get("droppedSessionId") or "",
+            "kickError": prep.get("kickError") or "",
+            "pinnedSessionId": "",
+            "warning": "",
+            "client": "grok-bot",
+            "nativeSwitch": True,
+        }
+        return self._attach_session_block(out, account_id, pin_local=False)
+
+    def switch_account(
+        self,
+        account_id: str,
+        reset_machine_id: bool = False,
+        refresh_first: bool = True,
+        kick_old_tool: bool = False,
+        classic: bool = True,
+    ) -> dict:
+        """一键切号：默认先刷新登录票，再用新票写入本机 Cursor 并重启。"""
+        prep = self._prepare_writable_token(
+            account_id, refresh_first, kick_old_tool, write_target="Cursor"
+        )
+        if not prep.get("ok"):
+            return prep
+        jwt = prep["jwt"]
+        email = prep.get("email") or ""
+        refresh_jwt = prep.get("refreshJwt")
+        user_id = prep.get("userId")
         try:
             layout = sand_patch.resolve_cursor_layout()
         except sand_patch.SandToolError as exc:
@@ -706,13 +1081,20 @@ class Api:
             local_cursor.write_local_account(jwt, email, refresh_token=refresh_jwt, user_id=user_id)
             if reset_machine_id:
                 local_cursor.reset_machine_ids()
-            sand_patch.start_cursor(layout)
-            return {
+            sand_patch.start_cursor(layout, classic=classic)
+            out = {
                 "ok": True,
                 "email": email,
                 "resetMachineId": bool(reset_machine_id),
-                "exchanged": exchanged,
+                "exchanged": bool(prep.get("exchanged")),
+                "refreshed": bool(prep.get("refreshed")),
+                "usedAccessAsRefresh": bool(prep.get("usedAccessAsRefresh")),
+                "droppedSessionId": prep.get("droppedSessionId") or "",
+                "kickError": prep.get("kickError") or "",
+                "pinnedSessionId": "",
+                "warning": "",
             }
+            return self._attach_session_block(out, account_id, pin_local=True)
         except PermissionError as exc:
             return {"ok": False, "error": f"没有写入权限，请用管理员身份运行本工具：{exc}"}
         except sand_patch.SandToolError as exc:
@@ -734,6 +1116,9 @@ class Api:
     def get_settings(self) -> dict:
         data = _read_json("settings.json", {})
         return data if isinstance(data, dict) else {}
+
+    def app_info(self) -> dict:
+        return ops_ui.app_info()
 
     def set_settings(self, data: dict) -> bool:
         _write_json("settings.json", data or {})

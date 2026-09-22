@@ -34,6 +34,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import login_detect
+from urllib.parse import parse_qs, urlparse
+
 SAND_USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
 ACCESS_STATUS_URL = "https://cursor.com/api/dashboard/get-sand-access-status"
 START_TRIAL_URL = "https://cursor.com/api/dashboard/start-sand-trial"
@@ -144,6 +147,93 @@ def probe_token_alive(token: str) -> str:
     return "unknown"
 
 
+def parse_login_deep_url(url: str) -> dict:
+    """解析 Grok Bot / Cursor 打开的 loginDeepControl 授权链接。"""
+    raw = (url or "").strip()
+    if not raw:
+        return {"ok": False, "error": "缺少授权链接"}
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return {"ok": False, "error": "授权链接无效"}
+    host = (parsed.netloc or "").split("@")[-1].lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "cursor.com":
+        return {"ok": False, "error": "不是 cursor.com 的授权链接"}
+    path = (parsed.path or "").rstrip("/")
+    if not path.endswith("loginDeepControl"):
+        return {"ok": False, "error": "不是 Grok Bot / Cursor 的 loginDeepControl 链接"}
+    qs = parse_qs(parsed.query, keep_blank_values=False)
+    def first(key: str) -> str:
+        vals = qs.get(key) or []
+        return str(vals[0]).strip() if vals else ""
+    handshake = first("uuid")
+    challenge = first("challenge")
+    if not handshake or not challenge:
+        return {"ok": False, "error": "授权链接缺少 uuid 或 challenge"}
+    team = first("supportsSelectedTeamLogin").lower() in ("1", "true", "yes")
+    return {
+        "ok": True,
+        "uuid": handshake,
+        "challenge": challenge,
+        "mode": first("mode") or "login",
+        "redirectTarget": first("redirectTarget"),
+        "supportsSelectedTeamLogin": team,
+        "url": raw,
+    }
+
+
+def confirm_login_deep_control(token: str, login_url: str, timeout: int = 30) -> dict:
+    """用号池 token 代完成 Grok Bot 已发起的 PKCE，不 poll（verifier 在 Grok Bot 进程里）。
+
+    网页上对 token 注入账号点 Sign in 会 Unable to complete sign-in（AuthKit 要的是
+    密码登录建立的 web 会话）。这里直接 POST loginDeepCallbackControl，让 Grok Bot
+    自己的 /auth/poll 拿到票。
+    """
+    parsed = parse_login_deep_url(login_url)
+    if not parsed.get("ok"):
+        return parsed
+    try:
+        user_id, jwt, _claims = parse_token(token)
+    except Exception as exc:
+        return {"ok": False, "error": f"token 解析失败：{exc}"}
+    body = {
+        "uuid": parsed["uuid"],
+        "challenge": parsed["challenge"],
+        "mode": parsed.get("mode") or "login",
+    }
+    if parsed.get("redirectTarget"):
+        body["redirectTarget"] = parsed["redirectTarget"]
+    if parsed.get("supportsSelectedTeamLogin"):
+        body["supportsSelectedTeamLogin"] = True
+    cookie_val = f"{user_id}::{jwt}"
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update({"user-agent": CHROME_UA, "accept": "application/json, text/plain, */*"})
+    try:
+        resp = session.post(
+            LOGIN_DEEP_URL,
+            json=body,
+            headers={
+                "cookie": f"WorkosCursorSessionToken={cookie_val}",
+                "content-type": "application/json",
+                "origin": ORIGIN,
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"授权请求失败：{exc}"}
+    if not (200 <= resp.status_code < 300):
+        text = (resp.text or "").strip().replace("\n", " ")[:180]
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "error": f"代完成授权失败 HTTP {resp.status_code}" + (f"：{text}" if text else ""),
+        }
+    return {"ok": True, "status": resp.status_code}
+
+
 def exchange_web_to_session(token: str, timeout: int = 30):
     """把 type=web 的会话票换成 Cursor 客户端认的 type=session 的 (accessToken, refreshToken)。
 
@@ -248,7 +338,7 @@ def refresh_login_tokens(refresh_token: str, client_id: str | None = None) -> di
     if data.get("shouldLogout"):
         return {
             "ok": False,
-            "error": "refresh_token 已失效，需要重新登录",
+            "error": "这张 refresh 已被更新的登录票顶替（账号通常仍在线，不是掉号）",
             "status": status,
             "shouldLogout": True,
         }
@@ -258,11 +348,17 @@ def refresh_login_tokens(refresh_token: str, client_id: str | None = None) -> di
     access = data.get("access_token") or data.get("accessToken")
     if not isinstance(access, str) or not access.strip():
         return {"ok": False, "error": "响应缺少 access_token", "status": status}
-    new_refresh = data.get("refresh_token") or data.get("refreshToken") or rt
+    returned_refresh = data.get("refresh_token") or data.get("refreshToken")
+    if isinstance(returned_refresh, str) and returned_refresh.strip():
+        new_refresh = returned_refresh.strip()
+    else:
+        # 实测 2026-09-16：成功响应只有 access_token / id_token，没有 refresh_token。
+        # 若回退成入参里那张已被顶替的旧 session JWT，下次刷票会稳定 shouldLogout。
+        new_refresh = access.strip()
     out = {
         "ok": True,
         "accessToken": access.strip(),
-        "refreshToken": str(new_refresh).strip(),
+        "refreshToken": new_refresh,
         "clientId": cid,
     }
     try:
@@ -274,6 +370,30 @@ def refresh_login_tokens(refresh_token: str, client_id: str | None = None) -> di
     except Exception:
         pass
     return out
+
+
+def refresh_login_tokens_with_fallback(
+    refresh_token: str,
+    access_token: str | None = None,
+    client_id: str | None = None,
+) -> dict:
+    """先用 refresh 换票；若服务端 shouldLogout，再用当前 access（最新 session JWT）重试一次。
+
+    本机 Cursor 的 cursorAuth/refreshToken 往往是登录时稍早那张 session JWT。一旦有了更新的
+    access，旧 refresh 再打 /oauth/token 会 HTTP 200 + shouldLogout，但账号并未掉线。
+    """
+    result = refresh_login_tokens(refresh_token, client_id)
+    if result.get("ok"):
+        return result
+    access = (access_token or "").strip()
+    rt = (refresh_token or "").strip()
+    if not result.get("shouldLogout") or not access or access == rt:
+        return result
+    retry = refresh_login_tokens(access, client_id)
+    if retry.get("ok"):
+        retry["usedAccessAsRefresh"] = True
+        return retry
+    return result
 
 
 def _cookie(user_id: str, jwt: str) -> str:
@@ -641,19 +761,61 @@ def normalize_sessions(payload) -> dict:
     }
 
 
-def annotate_local_sessions(sessions, is_local_account) -> list:
-    """给会话打本机标记。官网没有电脑名：本机账号下，1 条客户端=本机，多条=可能是本机。不改入参。"""
+def annotate_local_sessions(
+    sessions,
+    is_local_account,
+    local_session_id: str | None = None,
+    local_host: str | None = None,
+    tool_session_id: str | None = None,
+    now_ms: int | None = None,
+    fresh_window_seconds: int | None = None,
+) -> list:
+    """给会话打本机 / 本工具 / 刚换票标记。不改入参。
+
+    若给出 local_session_id 且仍在列表里：只这一条客户端标 local，其余客户端不标（共号时不再全员「可能是本机」）。
+    否则沿用条数启发式：1 条客户端=本机，多条=可能是本机。
+    tool_session_id 对上时只那一条标 toolMark=tool（本工具自己的客户端，不等于 Cursor IDE）。
+    本工具若是最近新建的，或对不上时最近一台新建客户端，打 freshMark=fresh（刚换票）。
+    """
     rows = list(sessions or [])
+    pinned = str(local_session_id or "").strip()
+    host = str(local_host or "").strip()
+    tool = str(tool_session_id or "").strip()
+    present = {str(row.get("sessionId") or "").strip() for row in rows if isinstance(row, dict)}
+    window = (
+        login_detect.FRESH_TOOL_WINDOW_SECONDS
+        if fresh_window_seconds is None
+        else fresh_window_seconds
+    )
+
+    def _with_tool(item: dict) -> dict:
+        sid = str(item.get("sessionId") or "").strip()
+        item["toolMark"] = "tool" if (tool and sid == tool) else None
+        return item
+
     if not is_local_account:
-        return [{**row, "localMark": None} for row in rows]
-    client_n = sum(1 for row in rows if row.get("type") == "client")
-    mark = "local" if client_n == 1 else ("maybe-local" if client_n > 1 else None)
-    out = []
-    for row in rows:
-        item = dict(row)
-        item["localMark"] = mark if item.get("type") == "client" else None
-        out.append(item)
-    return out
+        out = [_with_tool({**row, "localMark": None}) for row in rows]
+    elif pinned and pinned in present:
+        out = []
+        for row in rows:
+            item = dict(row)
+            sid = str(item.get("sessionId") or "").strip()
+            if item.get("type") == "client" and sid == pinned:
+                item["localMark"] = "local"
+                if host:
+                    item["localHost"] = host
+            else:
+                item["localMark"] = None
+            out.append(_with_tool(item))
+    else:
+        client_n = sum(1 for row in rows if isinstance(row, dict) and row.get("type") == "client")
+        mark = "local" if client_n == 1 else ("maybe-local" if client_n > 1 else None)
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["localMark"] = mark if item.get("type") == "client" else None
+            out.append(_with_tool(item))
+    return login_detect.apply_fresh_marks(out, now_ms=now_ms, window_seconds=window)
 
 
 def pick_keep_session_ids(sessions, saved_keep_ids=None, is_local=False):

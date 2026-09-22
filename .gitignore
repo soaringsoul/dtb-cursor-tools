@@ -1,15 +1,18 @@
 # 构建产物 / 中间文件
 nuitka-out/
+.nuitka_venv/
 installer/
 build/
 dist/
 *.spec
+*.dmg
 nuitka-crash-report.xml
 
 # Python 缓存 / 虚拟环境
 __pycache__/
 *.pyc
 .venv/
+venv/
 
 # 临时/调试脚本
 _*.py
@@ -17,6 +20,7 @@ _*.js
 
 # 生成的图标（可由 make_icon.py 重新生成）
 icon.ico
+icon.icns
 
 .DS_Store
 agent-tools/

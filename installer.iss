@@ -1,5 +1,5 @@
 ; cursor账号管理器 安装包脚本（Inno Setup 6）
-; 版本与源 exe 名由 build.bat 通过 /DAppVer /DExeName 传入；单独跑 ISCC 时用下面默认值。
+; 版本与源 exe 名由 build_win.bat 通过 /DAppVer /DExeName 传入；单独跑 ISCC 时用下面默认值。
 #ifndef AppVer
 #define AppVer "1.2.1"
 #endif

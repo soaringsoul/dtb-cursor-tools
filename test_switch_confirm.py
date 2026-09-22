@@ -32,6 +32,18 @@ class SwitchConfirmCopyTest(unittest.TestCase):
         self.assertFalse(any("网站会话" in line for line in plain))
         self.assertTrue(any("网站会话" in line for line in web))
 
+    def test_refresh_first_mentions_new_ticket_and_latest_device(self):
+        lines = switch_confirm.confirm_lines("a@b.com", refresh_first=True)
+        blob = "\n".join(lines)
+        self.assertIn("新登录票", blob)
+        self.assertIn("最新", blob)
+
+    def test_refresh_first_off_uses_current_ticket(self):
+        lines = switch_confirm.confirm_lines("a@b.com", refresh_first=False)
+        blob = "\n".join(lines)
+        self.assertIn("当前这张票", blob)
+        self.assertNotIn("最新那台", blob)
+
 
 if __name__ == "__main__":
     unittest.main()

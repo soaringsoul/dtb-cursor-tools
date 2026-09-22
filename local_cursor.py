@@ -140,6 +140,43 @@ def write_local_account(
         conn.close()
 
 
+def read_machine_ids() -> dict:
+    """本机机器码：storage.json 的 telemetry.* + vscdb 的 serviceMachineId。读失败返回空字段。"""
+    out = {
+        "machineId": "",
+        "macMachineId": "",
+        "devDeviceId": "",
+        "serviceMachineId": "",
+    }
+    sj = storage_json_path()
+    if os.path.isfile(sj):
+        try:
+            data = json.load(open(sj, "r", encoding="utf-8"))
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            out["machineId"] = str(data.get("telemetry.machineId") or "")
+            out["macMachineId"] = str(data.get("telemetry.macMachineId") or "")
+            out["devDeviceId"] = str(data.get("telemetry.devDeviceId") or "")
+    db = state_db_path()
+    if os.path.isfile(db):
+        uri = "file:{}?mode=ro&immutable=1".format(db.replace("\\", "/"))
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=5)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM ItemTable WHERE key=?",
+                    ("storage.serviceMachineId",),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row and row[0]:
+                out["serviceMachineId"] = str(row[0])
+        except Exception:
+            pass
+    return out
+
+
 def _rand_hex64() -> str:
     return os.urandom(32).hex()
 

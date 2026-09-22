@@ -5,6 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+import login_detect
 import sand_api
 
 
@@ -101,6 +102,122 @@ class AnnotateLocalSessionsTest(unittest.TestCase):
         webs = [x["localMark"] for x in out if x["type"] == "web"]
         self.assertEqual(clients, ["maybe-local", "maybe-local"])
         self.assertEqual(webs, [None])
+
+    def test_pinned_session_marks_only_that_client(self):
+        payload = {
+            "sessions": [
+                SAMPLE["sessions"][0],
+                {
+                    "sessionId": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+                    "type": "SESSION_TYPE_CLIENT",
+                },
+                SAMPLE["sessions"][1],
+            ]
+        }
+        rows = sand_api.normalize_sessions(payload)["sessions"]
+        pinned = SAMPLE["sessions"][0]["sessionId"]
+        out = sand_api.annotate_local_sessions(rows, True, local_session_id=pinned)
+        marks = {x["sessionId"]: x["localMark"] for x in out}
+        self.assertEqual(marks[pinned], "local")
+        self.assertIsNone(marks["bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"])
+        self.assertIsNone(marks[SAMPLE["sessions"][1]["sessionId"]])
+
+    def test_pinned_session_can_carry_hostname(self):
+        other = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+        payload = {
+            "sessions": [
+                SAMPLE["sessions"][0],
+                {"sessionId": other, "type": "SESSION_TYPE_CLIENT"},
+            ]
+        }
+        rows = sand_api.normalize_sessions(payload)["sessions"]
+        pinned = SAMPLE["sessions"][0]["sessionId"]
+        out = sand_api.annotate_local_sessions(
+            rows, True, local_session_id=pinned, local_host="office-mac"
+        )
+        by_id = {x["sessionId"]: x for x in out}
+        self.assertEqual(by_id[pinned]["localMark"], "local")
+        self.assertEqual(by_id[pinned]["localHost"], "office-mac")
+        self.assertNotIn("localHost", by_id[other])
+
+    def test_tool_session_marked_distinct_from_local(self):
+        other = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+        payload = {
+            "sessions": [
+                SAMPLE["sessions"][0],
+                {"sessionId": other, "type": "SESSION_TYPE_CLIENT"},
+            ]
+        }
+        rows = sand_api.normalize_sessions(payload)["sessions"]
+        pinned = SAMPLE["sessions"][0]["sessionId"]
+        out = sand_api.annotate_local_sessions(
+            rows, True, local_session_id=pinned, tool_session_id=other
+        )
+        by_id = {x["sessionId"]: x for x in out}
+        self.assertEqual(by_id[pinned]["localMark"], "local")
+        self.assertIsNone(by_id[pinned]["toolMark"])
+        self.assertIsNone(by_id[other]["localMark"])
+        self.assertEqual(by_id[other]["toolMark"], "tool")
+
+    def test_same_session_can_be_local_and_tool(self):
+        rows = sand_api.normalize_sessions(SAMPLE)["sessions"]
+        pinned = SAMPLE["sessions"][0]["sessionId"]
+        out = sand_api.annotate_local_sessions(
+            rows, True, local_session_id=pinned, tool_session_id=pinned
+        )
+        self.assertEqual(out[0]["localMark"], "local")
+        self.assertEqual(out[0]["toolMark"], "tool")
+
+    def test_recent_tool_session_gets_fresh_mark(self):
+        other = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+        now = login_detect.created_at_ms("2026-09-16T14:43:00.000Z")
+        payload = {
+            "sessions": [
+                {
+                    "sessionId": SAMPLE["sessions"][0]["sessionId"],
+                    "type": "SESSION_TYPE_CLIENT",
+                    "createdAt": "2026-08-01T00:00:00.000Z",
+                },
+                {
+                    "sessionId": other,
+                    "type": "SESSION_TYPE_CLIENT",
+                    "createdAt": "2026-09-16T14:42:11.000Z",
+                },
+            ]
+        }
+        rows = sand_api.normalize_sessions(payload)["sessions"]
+        out = sand_api.annotate_local_sessions(
+            rows, False, tool_session_id=other, now_ms=now
+        )
+        by_id = {x["sessionId"]: x for x in out}
+        self.assertEqual(by_id[other]["toolMark"], "tool")
+        self.assertEqual(by_id[other]["freshMark"], "fresh")
+        self.assertIsNone(by_id[SAMPLE["sessions"][0]["sessionId"]]["freshMark"])
+
+    def test_newest_recent_client_gets_fresh_mark_without_tool_id(self):
+        now = login_detect.created_at_ms("2026-09-16T14:43:00.000Z")
+        old_id = SAMPLE["sessions"][0]["sessionId"]
+        new_id = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+        payload = {
+            "sessions": [
+                {
+                    "sessionId": old_id,
+                    "type": "SESSION_TYPE_CLIENT",
+                    "createdAt": "2026-08-01T00:00:00.000Z",
+                },
+                {
+                    "sessionId": new_id,
+                    "type": "SESSION_TYPE_CLIENT",
+                    "createdAt": "2026-09-16T14:42:11.000Z",
+                },
+            ]
+        }
+        rows = sand_api.normalize_sessions(payload)["sessions"]
+        out = sand_api.annotate_local_sessions(rows, False, now_ms=now)
+        by_id = {x["sessionId"]: x for x in out}
+        self.assertIsNone(by_id[new_id]["toolMark"])
+        self.assertEqual(by_id[new_id]["freshMark"], "fresh")
+        self.assertIsNone(by_id[old_id]["freshMark"])
 
     def test_does_not_mutate_input(self):
         rows = sand_api.normalize_sessions(SAMPLE)["sessions"]

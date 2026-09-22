@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import api_key_store
+import login_detect
 import sand_api
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -41,6 +42,13 @@ _SESSIONS_SEED = {
             "typeRaw": "SESSION_TYPE_CLIENT",
             "createdAt": "2026-08-20T04:12:00.000Z",
             "expiresAt": "2026-10-19T04:12:00.000Z",
+        },
+        {
+            "sessionId": "dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444",
+            "type": "client",
+            "typeRaw": "SESSION_TYPE_CLIENT",
+            "createdAt": "2026-09-01T08:00:00.000Z",
+            "expiresAt": "2026-10-31T08:00:00.000Z",
         },
         {
             "sessionId": "9c5904911dd4a73f2883bd6a6f391e4d1d25422e653ede8c46613af700838eed",
@@ -77,16 +85,21 @@ _SESSIONS_SEED = {
 
 
 def _stamp_recent_logins(rows, aid):
-    """预览：本机客户端保持旧创建时间（默认会预勾），网页/其他两台标成刚登录。"""
-    if aid != DEMO_ID or len(rows) < 3:
+    """预览：客户端保持各自创建时间；网页/其它设备标成刚登录。"""
+    if aid != DEMO_ID:
         return
     now = time.time()
-    rows[1]["createdAt"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 30)
-    )
-    rows[2]["createdAt"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 50)
-    )
+    offsets = [30, 50]
+    i = 0
+    for row in rows:
+        if row.get("type") == "client" or row.get("typeRaw") == "SESSION_TYPE_CLIENT":
+            continue
+        if i >= len(offsets):
+            break
+        row["createdAt"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - offsets[i])
+        )
+        i += 1
 
 
 def _copy_sessions(aid):
@@ -160,10 +173,38 @@ def _guard_loop():
                     g["lastKicked"] = [kicked] + list(g["lastKicked"] or [])[:7]
 
 
+def _preview_local_session_id(rows):
+    for row in rows or []:
+        if row.get("type") == "client" or row.get("typeRaw") == "SESSION_TYPE_CLIENT":
+            return str(row.get("sessionId") or "")
+    return ""
+
+
+def _preview_tool_session_id(rows):
+    """预览共号：第二条客户端当作本工具自己的会话。"""
+    seen = 0
+    for row in rows or []:
+        if row.get("type") == "client" or row.get("typeRaw") == "SESSION_TYPE_CLIENT":
+            seen += 1
+            if seen == 2:
+                return str(row.get("sessionId") or "")
+    return ""
+
+
 def _session_block(aid=DEMO_ID):
     rows = [dict(s) for s in _sessions_of(aid)]
     _stamp_recent_logins(rows, aid)
-    sessions = sand_api.annotate_local_sessions(rows, aid == DEMO_ID)
+    pinned = _preview_local_session_id(rows) if aid == DEMO_ID else ""
+    tool = _preview_tool_session_id(rows) if aid == DEMO_ID else ""
+    sessions = login_detect.sort_sessions_for_display(
+        sand_api.annotate_local_sessions(
+            rows,
+            aid == DEMO_ID,
+            local_session_id=pinned or None,
+            local_host="preview-mac",
+            tool_session_id=tool or None,
+        )
+    )
     return {
         "ok": True,
         "error": "",
@@ -188,6 +229,21 @@ def _guard_status():
             snap["sessionCount"] = len(_SESSIONS.get(aid, []))
             out[aid] = snap
         return out
+
+
+def _bump_local_client_created_at(aid):
+    """换票后把该号第一条客户端会话 createdAt 改成现在（若已是现在则再加 1ms）。"""
+    rows = _sessions_of(aid)
+    now_ms = int(time.time() * 1000)
+    for row in rows:
+        if row.get("type") != "client" and row.get("typeRaw") != "SESSION_TYPE_CLIENT":
+            continue
+        prev = login_detect.created_at_ms(row.get("createdAt"))
+        if prev is not None and now_ms <= prev:
+            now_ms = prev + 1
+        row["createdAt"] = login_detect.ms_to_iso(now_ms)
+        return str(row.get("sessionId") or "")
+    return ""
 
 
 def _start_guard(aid, keep, seconds):
@@ -297,6 +353,9 @@ def _rpc(method: str, args):
         return out
     if method == "get_settings":
         return {"hideHelp": True, "autoVerify": True}
+    if method == "app_info":
+        import ops_ui
+        return ops_ui.app_info()
     if method == "mark_ui_ready":
         return True
     if method == "request_quit":
@@ -346,15 +405,36 @@ def _rpc(method: str, args):
         return {"ok": True, "browser": "preview", "url": "https://cursor.com/dashboard/settings#active-sessions", "reused": False}
     if method == "open_login":
         return {"ok": True, "browser": "preview"}
-    if method == "switch_account":
+    if method == "switch_account" or method == "login_bot":
         aid = _aid(args)
         reset = bool(args[1]) if len(args or []) > 1 else False
+        refresh_first = True if len(args or []) < 3 else bool(args[2])
+        kick_old = bool(args[3]) if len(args or []) > 3 else False
+        dropped = ""
+        refreshed = False
+        ident = _rpc("local_identity", [])
+        with _LOCK:
+            if refresh_first:
+                if kick_old:
+                    rows = list(_sessions_of(aid))
+                    tool = _preview_tool_session_id(rows) if aid == DEMO_ID else ""
+                    if tool and not (
+                        ident.get("ok") and ident.get("userId") == aid and tool == _preview_local_session_id(rows)
+                    ):
+                        _SESSIONS[aid] = [s for s in rows if s.get("sessionId") != tool]
+                        dropped = tool
+                _bump_local_client_created_at(aid)
+                refreshed = True
+            block = _session_block(aid)
         return {
+            **block,
             "ok": True,
             "email": _email_of(aid),
             "resetMachineId": reset,
             "exchanged": False,
-            "warning": "",
+            "warning": block.get("sessionError") or "",
+            "refreshed": refreshed,
+            "droppedSessionId": dropped,
         }
     if method == "device_guard_status":
         return _guard_status()
@@ -420,12 +500,69 @@ def _rpc(method: str, args):
             "accounts": _rpc("list_accounts", []),
         }
     if method == "refresh_login_one":
+        aid = _aid(args)
+        with _LOCK:
+            _bump_local_client_created_at(aid)
         return {
             "ok": True,
             "tokenType": "session",
             "exp": int(time.time()) + 86400 * 30,
             "accounts": _rpc("list_accounts", []),
         }
+    if method == "refresh_login_kick_old":
+        aid = _aid(args)
+        ident = _rpc("local_identity", [])
+        with _LOCK:
+            rows = list(_sessions_of(aid))
+            tool = _preview_tool_session_id(rows) if aid == DEMO_ID else ""
+            dropped = ""
+            if tool and not (ident.get("ok") and ident.get("userId") == aid and tool == _preview_local_session_id(rows)):
+                _SESSIONS[aid] = [s for s in rows if s.get("sessionId") != tool]
+                dropped = tool
+            _bump_local_client_created_at(aid)
+        return {
+            "ok": True,
+            "tokenType": "session",
+            "exp": int(time.time()) + 86400 * 30,
+            "droppedSessionId": dropped,
+            "accounts": _rpc("list_accounts", []),
+        }
+    if method == "device_guard_pin_local":
+        aid = _aid(args)
+        ident = _rpc("local_identity", [])
+        if not (ident.get("ok") and ident.get("userId") == aid):
+            return {"ok": False, "error": "请先在本机 Cursor 登录这个号"}
+        raw_iv = args[1] if len(args or []) > 1 else 30
+        try:
+            seconds = int(raw_iv)
+        except (TypeError, ValueError):
+            seconds = 30
+        seconds = max(5, min(3600, seconds))
+        with _LOCK:
+            rows = [dict(s) for s in _sessions_of(aid)]
+            count = len(rows)
+            ide = _preview_local_session_id(rows) if aid == DEMO_ID else ""
+            tool = _preview_tool_session_id(rows) if aid == DEMO_ID else ""
+            present = [str(s.get("sessionId") or "") for s in rows]
+            keep = login_detect.keep_session_ids_for_local_guard(ide, tool, present)
+            if not keep:
+                return {
+                    "ok": False,
+                    "error": "认不出本机 Cursor 那条客户端（签发时间没对上唯一一台），未开启保护",
+                    "keepIds": [],
+                    "beforeCount": count,
+                    "afterCount": count,
+                    "status": dict(_guard_of(aid)),
+                }
+            started = _start_guard(aid, keep, seconds)
+            return {
+                "ok": True,
+                "keepIds": keep,
+                "beforeCount": count,
+                "afterCount": count,
+                "status": started.get("status") or {},
+                "error": "",
+            }
     if method == "list_account_tokens":
         return {
             "ok": True,
@@ -575,12 +712,12 @@ MOCK_JS = r"""
     }).then(function (r) { return r.json(); });
   }
   const names = [
-    "list_accounts", "load_status", "get_settings", "set_settings", "save_status",
+    "list_accounts", "load_status", "get_settings", "set_settings", "save_status", "app_info",
     "local_identity", "list_sessions", "revoke_session", "revoke_sessions", "open_dashboard", "open_sessions_page", "open_login",
-    "device_guard_status", "device_guard_start", "device_guard_start_auto", "device_guard_stop", "device_guard_stop_all",
+    "device_guard_status", "device_guard_start", "device_guard_start_auto", "device_guard_pin_local", "device_guard_stop", "device_guard_stop_all",
     "detect_local_account", "import_files", "import_text", "clear_accounts",
     "remove_accounts", "claim_one", "verify_one", "status_one", "sand_status_one",
-    "switch_account", "probe_refresh_one", "refresh_login_one", "list_account_tokens",
+    "switch_account", "login_bot", "probe_refresh_one", "refresh_login_one", "refresh_login_kick_old", "list_account_tokens",
     "account_export_text", "export_accounts", "clip_set",
     "list_api_keys", "get_last_api_key_input", "set_last_api_key_input", "import_api_keys", "remove_api_key",
     "list_cloud_agents", "delete_all_cloud_agents", "delete_cloud_agent",

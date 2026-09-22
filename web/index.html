@@ -12,42 +12,46 @@
       <div class="hero-title">
         <div class="logo">C</div>
         <div>
-          <h1>cursor账号管理器</h1>
-          <p class="sub">Grok Bot（Sand）批量领取 · 导入即自动验证账号 · Bot / Auto / 高级 三池额度分开看</p>
+          <h1>cursor账号管理器 <span class="ver" id="appVersion"></span></h1>
+          <p class="sub">本机号池工作台 · 看额度、切号、守设备 · 数据只留本机</p>
         </div>
       </div>
       <div class="hero-side">
         <div class="hero-stats">
-          <div class="stat"><b id="statTotal">0</b><span>账号</span></div>
-          <div class="stat"><b id="statAlive">0</b><span>有效</span></div>
-          <div class="stat"><b id="statDead">0</b><span>失效</span></div>
-          <div class="stat"><b id="statDone">0</b><span>已开通</span></div>
-          <div class="stat"><b id="statCard">0</b><span>需绑卡</span></div>
+          <div class="stat" data-filter="all" role="button" tabindex="0" title="显示全部账号"><b id="statTotal">0</b><span>账号</span></div>
+          <div class="stat" data-filter="expiring" role="button" tabindex="0" title="只看 7 天内到期"><b id="statExpiring">0</b><span>即将到期</span></div>
+          <div class="stat" data-filter="dead" role="button" tabindex="0" title="只看失效"><b id="statDead">0</b><span>失效</span></div>
+          <div class="stat" data-filter="guarding" role="button" tabindex="0" title="只看保护中"><b id="statGuard">0</b><span>保护中</span></div>
+          <div class="stat" data-filter="botFull" role="button" tabindex="0" title="只看 Bot 用尽"><b id="statBotFull">0</b><span>Bot 用尽</span></div>
         </div>
         <button type="button" class="btn ghost icon-btn" id="btnHelp" title="使用说明">说明</button>
       </div>
     </header>
 
-    <div class="notice glass" role="note">
+    <div class="notice glass" id="freeNotice" role="note">
       <span class="notice-tag">公益免费</span>
       <span>作者 <b>夜雨微寒</b>。本工具<b>完全免费、纯公益分享</b>，仅供学习交流，严禁倒卖或收费。若是<b>花钱买到</b>的，请向卖家<b>申请全额退款</b>，并留意文件是否被篡改。</span>
+      <button type="button" class="btn ghost tiny" id="btnHideNotice">收起</button>
     </div>
 
     <nav class="tab-bar glass" role="tablist" aria-label="功能页">
       <button type="button" class="tab-btn active" id="tabAccounts" role="tab" aria-selected="true" aria-controls="paneAccounts" data-tab="accounts">账号管理</button>
-      <button type="button" class="tab-btn" id="tabAgents" role="tab" aria-selected="false" aria-controls="paneAgents" data-tab="agents">云端agent管理</button>
+      <button type="button" class="tab-btn" id="tabAgents" role="tab" aria-selected="false" aria-controls="paneAgents" data-tab="agents">云端 Agent</button>
     </nav>
 
     <div class="tab-pane" id="paneAccounts" role="tabpanel" aria-labelledby="tabAccounts">
-    <section class="glass card" id="importCard">
+    <section class="glass card is-collapsed" id="importCard">
       <div class="card-head">
-        <h2>导入账号</h2>
+        <button type="button" class="card-toggle" id="btnToggleImport" aria-expanded="false" aria-controls="importBody" title="展开或收起导入框">
+          <span class="card-toggle-title">导入账号</span>
+          <span class="chev" aria-hidden="true"></span>
+        </button>
         <div class="actions">
           <button class="btn primary" id="btnDetectLocal">探测本机账号</button>
           <button class="btn" id="btnImportFile">导入文件</button>
-          <button class="btn ghost" id="btnClear">清空</button>
         </div>
       </div>
+      <div class="import-body" id="importBody">
       <div class="dropzone">
         <textarea id="tokenInput" spellcheck="false"
           placeholder="粘贴 token，每行一个。支持：&#10;邮箱----user_01XXXX::eyJ...&#10;user_01XXXX::eyJ... 或裸 JWT&#10;也可直接粘贴 JSON / 点「导入文件」。"></textarea>
@@ -58,6 +62,7 @@
           <input type="checkbox" id="autoVerifyChk" checked /> 导入后自动验证
         </label>
         <span class="hint" id="importHint">支持批量多行或多个 JSON；「邮箱----token」会直接认出邮箱。</span>
+      </div>
       </div>
     </section>
 
@@ -76,15 +81,33 @@
           <label class="conc">并发
             <input type="number" id="concInput" min="1" max="10" value="3" />
           </label>
-          <span class="hint" id="selHint">验证 / 领取：不勾选=全部。删除 / 批量保护：只处理勾选。</span>
+          <input type="search" id="acctSearch" placeholder="搜索邮箱 / user id" autocomplete="off" />
+          <select id="acctFilter" title="筛选账号。付费含 Pro / Pro+ / Ultra / Team；Free 只含已验证的免费套餐">
+            <option value="all">全部</option>
+            <option value="paid">付费账户</option>
+            <option value="free">Free 账号</option>
+            <option value="local">本机</option>
+            <option value="guarding">保护中</option>
+            <option value="dead">失效</option>
+            <option value="expiring">即将到期</option>
+            <option value="botFull">Bot 用尽</option>
+            <option value="card">需绑卡</option>
+          </select>
+          <span class="hint" id="selHint">先勾选账号再批量操作。验证 / 领取 / 删除 / 保护都只处理勾选。</span>
         </div>
         <div class="toolbar-acts">
-          <button class="btn danger" id="btnRemoveSel" title="删除勾选的账号（不勾选不会删）">删除选中</button>
-          <button class="btn" id="btnVerify" title="验证账号是否有效（过期 / 401 / 403），并刷新邮箱、套餐、订阅剩余、Bot / Auto / 高级 用量、云端登录会话。不做领取。">验证账号</button>
-          <button class="btn" id="btnExport" title="全部导出为 txt：先按套餐分大类（Ultra / Pro+ / Pro / 团队 / Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，每段头部注明，段内按剩余时间从短到长">导出全部</button>
-          <button class="btn" id="btnGuardSel" title="给勾选的账号同时开启本机设备保护。每个号保留当前在线设备（有上次勾选则沿用），之后新登录会被踢。不勾选不会开。">批量保护</button>
-          <button class="btn" id="btnGuardStopSel" title="停止勾选账号的本机设备保护。不勾选不会停。">停止选中保护</button>
-          <button class="btn primary" id="btnClaimAll" title="给账号领取 Sand（Grok Bot）资格；已开通的会直接跳过">批量领取</button>
+          <button class="btn" id="btnVerify" title="验证勾选账号是否有效，并刷新邮箱、套餐、订阅剩余、三池用量、云端登录会话。不做领取。">验证账号</button>
+          <button class="btn" id="btnExport" title="全部导出为 txt：先按套餐分大类，大类里再分「未用 Bot / 已用 Bot / 不续费」">导出全部</button>
+          <details class="toolbar-more" id="toolbarMore">
+            <summary class="btn">更多</summary>
+            <div class="toolbar-more-menu">
+              <button type="button" class="btn" id="btnClaimAll" title="给勾选账号领取 Sand（Grok Bot）资格；已开通的会跳过">批量领取</button>
+              <button type="button" class="btn" id="btnGuardSel" title="给勾选账号开启本机设备保护">批量保护</button>
+              <button type="button" class="btn" id="btnGuardStopSel" title="停止勾选账号的本机设备保护">停止选中保护</button>
+              <button type="button" class="btn danger" id="btnRemoveSel" title="删除勾选的账号">删除选中</button>
+              <button type="button" class="btn danger" id="btnClear" title="清空列表里的全部账号">清空全部</button>
+            </div>
+          </details>
         </div>
       </div>
       <div class="progress-wrap" id="progressWrap" hidden>
@@ -96,11 +119,11 @@
           <thead>
             <tr>
               <th class="col-chk"><input type="checkbox" id="chkAll" title="全选/取消" /></th>
-              <th>账号 / 邮箱</th>
+              <th class="sortable" data-sort="added" title="本机当前登录的账号固定在最上面，其余按导入时间，新的在上">账号 / 邮箱</th>
               <th>套餐</th>
-              <th>订阅到期</th>
+              <th class="sortable" data-sort="remain" title="按剩余时间排序">订阅到期</th>
               <th>Sand 状态</th>
-              <th class="col-quota">额度（Bot 周 / Auto 月 / 高级 月）</th>
+              <th class="col-quota sortable" data-sort="bot" title="按 Bot 周用量排序">额度（Bot 周 / Auto 月 / 高级 月）</th>
               <th class="col-act">操作</th>
             </tr>
           </thead>
@@ -109,7 +132,15 @@
         <div class="empty" id="emptyHint">
           <span class="empty-mark">S</span>
           <b>还没有账号</b>
-          <span>粘贴 token 或导入 JSON，再点「添加到列表」</span>
+          <span>先读取本机 Cursor 正在登录的号，或导入文件 / 粘贴 token</span>
+          <div class="empty-acts">
+            <button type="button" class="btn primary" id="btnEmptyDetect">读取本机 Cursor 账号</button>
+            <button type="button" class="btn" id="btnEmptyPaste">粘贴 token</button>
+          </div>
+        </div>
+        <div class="empty" id="filterEmpty" hidden>
+          <b>没有符合条件的账号</b>
+          <span>试试清空搜索或换一个筛选</span>
         </div>
       </div>
     </section>
@@ -143,7 +174,13 @@
   <div class="modal-mask" id="helpMask" hidden>
     <div class="modal glass">
       <h2>使用说明</h2>
-      <div class="modal-body">
+      <div class="modal-body" id="helpIntro">
+        <p>本工具由作者<b>夜雨微寒</b>制作，<b>完全免费</b>，token 只留本机、不上传。严禁倒卖或收费。</p>
+        <div class="help-jobs" id="helpJobs"></div>
+        <p class="hint">切号会关掉 Cursor；刷登录票会多一台 Desktop App；保护/踢设备不可逆。</p>
+      </div>
+      <p class="help-more-row"><button type="button" class="btn" id="btnHelpDetail">详细规则</button></p>
+      <div class="modal-body" id="helpDetail" hidden>
         <p><b>公益免费声明</b></p>
         <p>本工具由作者<b>夜雨微寒</b>制作，完全免费、纯公益分享，仅供学习交流，严禁倒卖或收费。若你是<b>付费购买</b>得到的，请立即向卖家<b>申请退款</b>——作者夜雨微寒从不收费，付费即被倒卖，并注意甄别文件是否被篡改。</p>
         <p><b>领取规则（按套餐区分）</b></p>
@@ -156,14 +193,14 @@
         <ul>
           <li><b>导入账号</b>：粘贴 access_token / ws token / <code>邮箱----token</code>（每行一个），或「导入文件」选 cursor_accounts_*.json。导入后<b>自动验证</b>：识别邮箱、套餐、订阅剩余时间、三池用量。账号与状态都会自动保存，下次打开无需重导。</li>
           <li><b>验证账号</b>：只做检查，不领取（不会碰任何领取接口）。判定 token 是否有效（过期 / 被服务端拒绝会标「失效」），读取 Sand 资格状态、套餐、订阅剩余、三池用量。「Sand 状态」列的「已开通」来自 Cursor 的资格接口，下面小字会写「套餐自带」或「本次领取」。</li>
-          <li><b>批量领取</b>：给账号领 Sand（Grok Bot）资格，已开通的直接跳过；可设「并发」数并行。<b>勾选</b>部分账号则只处理勾选的，不勾则处理全部。</li>
-          <li><b>删除选中</b>：批量删除勾选的账号；「清空」删全部。</li>
-          <li><b>探测 Refresh / 刷新登录票</b>：从本机 Cursor 或号池整行记录 refresh_token；再用它向官方 OAuth 换新的登录票。</li>
-          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行邮箱下方的「显示 Token」（旁边是探测票 / 刷登录票 / 网页领取 / 复制）。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。</li>
+          <li><b>批量操作</b>：验证 / 领取 / 删除 / 保护都<b>只处理勾选</b>的账号，未勾选时按钮不可点。顶部「更多」里还有清空全部。</li>
+          <li><b>删除选中</b>：删除勾选的账号；「清空全部」删列表里所有号（需确认个数）。</li>
+          <li><b>探测 Refresh / 刷新登录票</b>：从本机 Cursor 或号池整行记录 refresh_token；「刷登录票」向官方 OAuth 换新票，不踢设备。「刷票并踢旧」必须先换票成功，再立刻踢掉本工具原来那条客户端（官方换票会新开一台 Desktop App）；不会踢 Cursor IDE。<b>切号</b>默认先换新票再写入本机 Cursor，这样「本机」会落在最新那台设备上；取消勾选「先刷新登录票」则只切列表里当前这张票。</li>
+          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行「登录票」菜单里的「显示 Token」。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。</li>
           <li><b>进控制台</b>：用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending），可直接看用量 / 账单 / 设置。每个账号一个独立浏览器 profile，不影响你日常浏览器的登录。</li>
-          <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；可勾选后<b>踢掉所选</b>，也可单台踢下线（与官网 Revoke 相同，成功后应立刻从列表消失）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP；若该号正在本机 Cursor 登录，一条客户端会标<b>本机</b>，多条则标<b>可能是本机</b>。</li>
-          <li><b>本机设备保护</b>：账号列表每行只放「本机保护」入口，点开会从<b>右侧抽出抽屉</b>；保护运行中也是打开抽屉，<b>停止保护在抽屉里</b>。开启前<b>勾选要保留的设备</b>，可用「全选保留 / 全不选 / 只留本机」，再点<b>立即删除未勾选</b>马上踢掉其余设备；也可设置<b>检测间隔（秒，默认 30）</b>后启动持续保护。抽屉里的<b>「检测登录时间」</b>会再弹一层设间隔（默认 120 秒）：把设备创建时间与本机现在比对，落在间隔内的标<b>刚登录</b>，并<b>清空原勾选、只勾这些刚登录设备</b>。<b>可同时保护多个账号</b>：表格勾选后点「批量保护」，每个号自动保留当前在线设备（有上次勾选则沿用），之后新登录会被踢；「停止选中保护」停勾选的号。顶部「保护中 N 个账号」可打开抽屉，多号时抽屉里可切换。点遮罩或「关闭」只收起抽屉，<b>不会停止保护</b>；关掉后可继续导入 / 验证 / 进控制台。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」或再批量开启（会回填上次的勾选与间隔）。</li>
-          <li><b>云端 Agent</b>：在顶部「云端agent管理」页。与登录票账号列表独立。把 Cursor Dashboard → <a href="https://cursor.com/dashboard/api" target="_blank" rel="noopener">API Keys</a> 里创建的用户密钥（<code>crsr_...</code>）粘贴进来，按密钥列出该账号下全部 Cloud Agent（含已归档）。列表每行可单独删除；「一键清理」会<b>永久删除</b>这把密钥下的全部 Agent，不可恢复，删除前会弹出数量确认。密钥只存本机、不上传；列表不显示完整密钥，输入框会记住上次粘贴的内容。</li>
+          <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；可勾选后<b>踢掉所选</b>，也可单台踢下线（与官网 Revoke 相同，成功后应立刻从列表消失）。刷登录票新开的 Desktop App 会标<b>刚换票</b>，并排到本机 / 本工具后面、比其它设备靠前（官方接口通常把它放在列表末尾）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP。若该号正在本机 Cursor 登录，会用本机 JWT 的签发时间去对客户端创建时间：对上恰好一条就标<b>本机</b>（共号多台客户端时也能认），并记住这台机器的机器码与 sessionId；对不上才退回「一条客户端=本机 / 多条=可能是本机」。切号重置机器码后需重新对上一次。</li>
+          <li><b>本机设备保护</b>：账号列表每行点「本机保护」从<b>右侧抽出抽屉</b>；<b>一键本机保护在抽屉里</b>，须先在本机 Cursor 登录该号。保护运行中也是打开抽屉，<b>停止保护在抽屉里</b>。开启前<b>勾选要保留的设备</b>，可用「全选保留 / 全不选 / 只留本机」，再点<b>立即删除未勾选</b>马上踢掉其余设备；也可设置<b>检测间隔（秒，默认 30）</b>后启动持续保护。抽屉里的<b>「检测登录时间」</b>会再弹一层设间隔（默认 120 秒）：把设备创建时间与本机现在比对，落在间隔内的标<b>刚登录</b>，并<b>清空原勾选、只勾这些刚登录设备</b>。<b>一键本机保护</b>用本机 Cursor 登录票的签发时间对上那条客户端，必要时连同本工具自己的会话一起保留，<b>不会再靠刷登录票认设备</b>。刷票会另开一条客户端，旧逻辑会把它当成「本机」把 Cursor 踢掉。对不上唯一一条 Cursor 客户端则不开保护。<b>可同时保护多个账号</b>：表格勾选后点「更多 → 批量保护」，每个号自动保留当前在线设备（有上次勾选则沿用），之后新登录会被踢；「停止选中保护」停勾选的号。顶部「保护中 N 个账号」可打开抽屉，多号时抽屉里可切换。点遮罩或「关闭」只收起抽屉，<b>不会停止保护</b>。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」或再批量开启（会回填上次的勾选与间隔）。</li>
+          <li><b>云端 Agent</b>：在顶部「云端 Agent」页。与登录票账号列表独立。把 Cursor Dashboard → <a href="https://cursor.com/dashboard/api" target="_blank" rel="noopener">API Keys</a> 里创建的用户密钥（<code>crsr_...</code>）粘贴进来，按密钥列出该账号下全部 Cloud Agent（含已归档）。列表每行可单独删除；「一键清理」会<b>永久删除</b>这把密钥下的全部 Agent，不可恢复，删除前会弹出数量确认。密钥只存本机、不上传；列表不显示完整密钥，输入框会记住上次粘贴的内容。</li>
         </ul>
         <p><b>额度怎么看</b></p>
         <ul>
@@ -182,7 +219,7 @@
       <h2 id="sessionTitle">登录设备</h2>
       <p class="hint modal-sub" id="sessionSub"></p>
       <div class="modal-body" id="sessionBody"></div>
-      <p class="hint modal-foot">对应 Settings → Active Sessions。勾选后可「踢掉所选」，成功后应立刻从列表消失。接口不提供电脑名或 IP。</p>
+      <p class="hint modal-foot">对应 Settings → Active Sessions。刷票新开的客户端会标「刚换票」并排到前面。勾选后可「踢掉所选」，成功后应立刻从列表消失。接口不提供电脑名或 IP。</p>
       <div class="modal-actions">
         <button class="btn" id="sessionBrowser" title="用该账号登录态打开官方会话页，可过校验或手动踢设备">浏览器打开</button>
         <button class="btn" id="sessionRefresh" title="重新拉取云端登录设备">刷新</button>
@@ -207,11 +244,16 @@
   </div>
 
   <div class="modal-mask" id="menuMask" hidden>
-    <div class="modal glass sheet">
-      <h2 id="menuTitle">操作</h2>
-      <p class="hint modal-sub" id="menuSub"></p>
-      <div class="menu-grid" id="menuBody"></div>
-      <div class="modal-actions"><button class="btn" id="menuClose">关闭</button></div>
+    <div class="modal glass sheet" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+      <div class="sheet-head">
+        <div class="sheet-head-text">
+          <h2 id="menuTitle">操作</h2>
+          <p class="hint modal-sub" id="menuSub"></p>
+          <div class="menu-meta" id="menuMeta"></div>
+        </div>
+        <button type="button" class="btn ghost tiny" id="menuClose">关闭</button>
+      </div>
+      <div id="menuBody"></div>
     </div>
   </div>
 
@@ -232,6 +274,14 @@
       <div id="switchConfirmBody">
         <p class="hint">确定把本机 Cursor 切到该账号？会先关掉当前 Cursor，写入登录态后再自动重启。</p>
       </div>
+      <div id="switchConfirmOpts">
+        <label class="modal-check"><input type="checkbox" id="switchRefreshFirstChk" checked /> 先刷新登录票再写入本机 Cursor</label>
+        <label class="modal-check"><input type="checkbox" id="switchKickOldChk" checked /> 踢掉刷新前本工具的旧客户端（不会踢 Cursor IDE）</label>
+      </div>
+      <label class="modal-check" id="loginBotUrlWrap" hidden>
+        Grok Bot 授权链接（loginDeepControl，不要在网页点 Sign in）
+        <textarea id="loginBotUrlInput" rows="2" spellcheck="false" placeholder="https://cursor.com/loginDeepControl?challenge=…&uuid=…"></textarea>
+      </label>
       <div class="modal-actions">
         <button type="button" class="btn" id="switchConfirmCancel">取消</button>
         <button type="button" class="btn primary" id="switchConfirmOk">确认切号</button>
@@ -248,6 +298,7 @@
         </div>
         <div class="drawer-head-acts">
           <button class="btn" id="guardCancel" title="关闭抽屉，不影响已启动的保护">关闭</button>
+          <button class="btn guard" id="guardPinLocal" hidden title="用本机 Cursor 登录票认 IDE，必要时连同本工具会话一起保留">一键本机保护</button>
           <button class="btn primary" id="guardStart">启动保护</button>
           <button class="btn danger" id="guardStop" hidden>停止保护</button>
         </div>

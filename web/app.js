@@ -7,23 +7,29 @@
 //   验证账号  → 判定 token 是否有效（过期 / 401 / 403 = 失效）+ 刷新信息，不领取
 //   批量领取  → 领 Sand（Grok Bot）资格，领完只轻量刷 Bot 周用量这一池
 //
-// 行内三个账号运维动作（与批量互不影响，忙碌时也可用）：
-//   进控制台  → 隔离浏览器注入登录态，落到 cursor.com/dashboard/spending
-//   查看设备  → 实时拉云端登录会话，可单台或勾选后批量踢下线（最多约 10 分钟生效）
+// 行内账号运维动作：
+//   进控制台 / 查看设备 / 本机保护  → 与批量领取、验证互不影响，忙碌时也可用
+//   一键本机保护 → 须本机正登录该号；用 Cursor JWT 认 IDE，必要时连同本工具会话一起保留；不刷票认设备；忙碌时禁用
 //   本机保护  → 勾选保留设备，可立即删除未勾选；可同时保护多个账号；启动后按间隔自动下线未保留设备
 
 let accounts = [];
 const rowState = {}; // id -> 行状态：kind + 有效性 + Bot/Auto/高级 三池 + 订阅
 const selected = new Set(); // 勾选的账号 id；为空表示「验证 / 领取」对全部生效
 let busy = false;
-let settings = {}; // settings.json：hideHelp / autoVerify / mainTab / loginDetectSec
+let settings = {}; // settings.json：hideHelp / hideNotice / autoVerify / mainTab / loginDetectSec / importOpen
+let listQuery = "";
+let listFilter = "all";
+let listSort = { key: "added", dir: 1 };
+let helpJobs = [];
 let lastPersisted = {}; // 上次落盘的稳定状态，避免瞬时失败把已保存的数据冲掉
 let localUserId = null; // 本机 Cursor 当前登录的 user_ id；未登录为 null
 let guardStatus = {}; // id -> device_guard_status() 的一项；running=true 表示该号的保护线程在跑
 let tokenViews = {}; // id -> {worksessionToken, refreshToken}
 const tokenOpenIds = new Set(); // 单行展开；工具栏「显示 Token」打开时全部展开
+const pinBusyIds = new Set(); // 一键本机保护进行中的账号，防止连点
 let apiKeys = []; // {id, apiKeyName, userEmail, userId, addedAt}，不含完整密钥
 const agentLists = {}; // keyId -> {loading, error, agents}
+let menuKind = ""; // ticket | row；登录票弹窗点「显示 Token」时要留着并刷新
 
 const $ = (id) => document.getElementById(id);
 
@@ -131,6 +137,97 @@ function remainMs(a, st) {
   if (!isNaN(sub)) return sub - Date.now();
   const t = expMs(a && a.exp);
   return isNaN(t) ? NaN : t - Date.now();
+}
+
+const EXPIRING_WINDOW_MS = 7 * 86400000;
+
+function isBotFull(st) {
+  if (!st) return false;
+  if (st.hasAvailableUsage === false) return true;
+  return st.percent != null && Number(st.percent) >= 100;
+}
+
+function isExpiring(a, st) {
+  if (st && st.alive === false) return false;
+  const r = remainMs(a, st);
+  return !isNaN(r) && r > 0 && r <= EXPIRING_WINDOW_MS;
+}
+
+function claimVisible(st) {
+  return !(st && st.kind === "ok");
+}
+
+function membershipKey(st) {
+  return String((st && st.membership) || "")
+    .toLowerCase()
+    .replace(/\+/g, "plus")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function isPaidPlan(st) {
+  const key = membershipKey(st);
+  return key === "pro" || key === "proplus" || key === "ultra" || key === "enterprise" || key === "team" || key === "business";
+}
+
+function isFreePlan(st) {
+  const key = membershipKey(st);
+  return key === "free" || key === "freetrial";
+}
+
+function accountMatches(a) {
+  const q = (listQuery || "").trim().toLowerCase();
+  if (q) {
+    const blob = ((a.label || "") + " " + (a.id || "")).toLowerCase();
+    if (!blob.includes(q)) return false;
+  }
+  const st = rowState[a.id];
+  const guarding = !!(guardStatus[a.id] && guardStatus[a.id].running);
+  if (listFilter === "local") return !!(localUserId && a.id === localUserId);
+  if (listFilter === "guarding") return guarding;
+  if (listFilter === "dead") return !!(st && st.alive === false);
+  if (listFilter === "card") return !!(st && st.kind === "card");
+  if (listFilter === "botFull") return isBotFull(st);
+  if (listFilter === "expiring") return isExpiring(a, st);
+  if (listFilter === "paid") return isPaidPlan(st);
+  if (listFilter === "free") return isFreePlan(st);
+  return true;
+}
+
+function compareAccounts(a, b, ia, ib) {
+  const key = listSort.key;
+  if (key === "remain") {
+    const da = rowState[a.id] && rowState[a.id].alive === false ? 1 : 0;
+    const db = rowState[b.id] && rowState[b.id].alive === false ? 1 : 0;
+    if (da !== db) return da - db;
+    const ra = remainMs(a, rowState[a.id]);
+    const rb = remainMs(b, rowState[b.id]);
+    const ma = isNaN(ra) ? 1 : 0;
+    const mb = isNaN(rb) ? 1 : 0;
+    if (ma !== mb) return ma - mb;
+    if (!ma && ra !== rb) return ra - rb;
+    return ia - ib;
+  }
+  if (key === "bot") {
+    const pa = rowState[a.id] && rowState[a.id].percent != null ? Number(rowState[a.id].percent) : NaN;
+    const pb = rowState[b.id] && rowState[b.id].percent != null ? Number(rowState[b.id].percent) : NaN;
+    const ma = isNaN(pa) ? 1 : 0;
+    const mb = isNaN(pb) ? 1 : 0;
+    if (ma !== mb) return ma - mb;
+    if (!ma && pa !== pb) return pb - pa;
+    return ia - ib;
+  }
+  if (key === "added") {
+    const aa = toMs(a.addedAt);
+    const ba = toMs(b.addedAt);
+    const ma = isNaN(aa) ? 1 : 0;
+    const mb = isNaN(ba) ? 1 : 0;
+    if (ma !== mb) return ma - mb;
+    if (!ma && aa !== ba) return ba - aa;
+    return ia - ib;
+  }
+  const ra = sortRank(a);
+  const rb = sortRank(b);
+  return ra[0] - rb[0] || ra[1] - rb[1] || ia - ib;
 }
 
 function expiryCell(a, st) {
@@ -302,13 +399,36 @@ function recentLoginCount(rows, nowMs, windowSec) {
   return recentLoginIds(rows, nowMs, windowSec).length;
 }
 
+function sessionDisplayPriority(s) {
+  if (!s) return 9;
+  if (s.localMark === "local") return 0;
+  if (s.toolMark === "tool") return 1;
+  if (s.freshMark === "fresh") return 2;
+  if (s.localMark === "maybe-local") return 3;
+  return 4;
+}
+
+function sortSessionsForDisplay(rows) {
+  const list = Array.isArray(rows) ? rows.slice() : [];
+  list.sort((a, b) => {
+    const pa = sessionDisplayPriority(a);
+    const pb = sessionDisplayPriority(b);
+    if (pa !== pb) return pa - pb;
+    return (toMs(b && b.createdAt) || 0) - (toMs(a && a.createdAt) || 0);
+  });
+  return list;
+}
+
 function sessionTypePill(t) {
   const cls = t === "client" ? "info" : t === "web" ? "amount" : "idle";
   return `<span class="pill mini ${cls}">${esc(sessionTypeLabel(t))}</span>`;
 }
 
 function resolveLocalMark(s, opts) {
-  if (s && s.localMark) return s.localMark;
+  // 后端 annotate 总会带 localMark（含 null）。钉死后其余客户端是 null，不能再走「多条=可能是本机」。
+  if (s && Object.prototype.hasOwnProperty.call(s, "localMark")) {
+    return s.localMark || "";
+  }
   const id = opts && opts.accountId;
   const rows = (opts && opts.sessions) || [];
   if (!localUserId || !id || id !== localUserId || (s && s.type) !== "client") return "";
@@ -428,12 +548,25 @@ function sessionRowHtml(s, opts) {
   const tags = [sessionTypePill(s.type)];
   const localMark = resolveLocalMark(s, opts);
   if (localMark === "local") {
-    tags.push(`<span class="pill mini ok" title="本机 Cursor 正登录此号，且云端只有一条客户端会话">本机</span>`);
+    const host = (s && s.localHost) || "";
+    const label = host ? `本机 · ${host}` : "本机";
+    tags.push(
+      `<span class="pill mini ok" title="本机 Cursor 的登录票签发时间与这条客户端创建时间一致，判定就是这台电脑${host ? "（" + esc(host) + "）" : ""}">${esc(label)}</span>`
+    );
   } else if (localMark === "maybe-local") {
-    tags.push(`<span class="pill mini warn" title="本机 Cursor 正登录此号。接口不区分电脑，这些客户端里有一台是这台机器，请自行确认后再勾选保留">可能是本机</span>`);
+    tags.push(`<span class="pill mini warn" title="本机 Cursor 正登录此号，但没对上签发时间。接口没有电脑名，这些客户端里可能有一台是这台机器">可能是本机</span>`);
   }
-  if (opts && opts.mineKind && s.type === opts.mineKind) {
-    tags.push(`<span class="pill mini warn" title="本工具用的登录票是${esc(sessionTypeLabel(opts.mineKind))}会话，这一条可能就是它：踢掉后该号在本工具里会失效">同类·可能是本工具</span>`);
+  if (s && s.toolMark === "tool") {
+    tags.push(
+      `<span class="pill mini info" title="本工具正在用的登录票对上了这条客户端。它和 Cursor IDE 不是同一条，一键保护会两条都留；踢掉后该号在本工具里会失效">本工具</span>`
+    );
+  } else if (opts && opts.mineKind && s.type === opts.mineKind && !opts.hasToolMark && !(s && s.freshMark === "fresh")) {
+    tags.push(`<span class="pill mini warn" title="本工具用的登录票是${esc(sessionTypeLabel(opts.mineKind))}会话，还没对上唯一一条：同类型里可能有一条是它，踢掉后该号在本工具里会失效">同类·可能是本工具</span>`);
+  }
+  if (s && s.freshMark === "fresh") {
+    tags.push(
+      `<span class="pill mini ok" title="刷登录票会新开一台 Desktop App。官方列表通常把它排在最后，这里标出来并提前，方便找到">刚换票</span>`
+    );
   }
   if (opts && opts.keepIds) {
     tags.push(
@@ -459,7 +592,7 @@ function sessionRowHtml(s, opts) {
 
 function renderSessionModal() {
   const m = sessionModal;
-  const rows = Array.isArray(m.sessions) ? m.sessions : [];
+  const rows = sortSessionsForDisplay(Array.isArray(m.sessions) ? m.sessions : []);
   $("sessionTitle").textContent = "登录设备 · " + (m.email || m.id || "");
   $("sessionSub").textContent = m.loading
     ? "正在实时拉取云端登录设备…"
@@ -479,6 +612,7 @@ function renderSessionModal() {
   }
   if (rows.length) {
     const mineKind = tokenSessionKind(m.tokenType);
+    const hasToolMark = rows.some((s) => s && s.toolMark === "tool");
     const selectedN = rows.filter((s) => m.checked.has(s.sessionId)).length;
     const busy = !!(m.busySid || m.busyBatch);
     html += `<div class="session-toolbar">`;
@@ -509,9 +643,9 @@ function renderSessionModal() {
         const dis = busy ? " disabled" : "";
         right = `<button type="button" class="btn tiny danger" data-sact="kick" data-sid="${esc(sid)}"${dis}>${m.busySid === sid ? "踢下线中…" : "踢下线"}</button>`;
       }
-      html += `<li class="session-row selectable${on ? " picked" : ""}${m.confirmSid === sid ? " confirming" : ""}"><label class="session-pick">` +
+      html += `<li class="session-row selectable${on ? " picked" : ""}${m.confirmSid === sid ? " confirming" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
         `<input type="checkbox" class="sesschk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
-        sessionRowHtml(s, { mineKind, accountId: m.id, sessions: rows }) +
+        sessionRowHtml(s, { mineKind, hasToolMark, accountId: m.id, sessions: rows }) +
         `</label>${right}</li>`;
     }
     html += `</ul>`;
@@ -949,14 +1083,20 @@ function renderGuardModal() {
   const id = m.id;
   if (!id) return;
   const g = guardStatus[id] || {};
-  const rows = Array.isArray(m.sessions) ? m.sessions : [];
+  const rows = sortSessionsForDisplay(Array.isArray(m.sessions) ? m.sessions : []);
   const mineKind = tokenSessionKind(m.tokenType);
+  const hasToolMark = rows.some((s) => s && s.toolMark === "tool");
   const isLocal = !!(localUserId && id === localUserId);
   $("guardTitle").textContent = "本机保护";
   const emailEl = $("guardEmail");
   if (emailEl) emailEl.textContent = m.email || id || "";
   $("guardStart").hidden = m.running;
   $("guardStop").hidden = !m.running;
+  const pinBtn = $("guardPinLocal");
+  if (pinBtn) {
+    pinBtn.hidden = !isLocal;
+    pinBtn.disabled = !isLocal || !!m.running || !!(m.loading || m.kicking) || pinBusyIds.has(id);
+  }
   const opts = $("guardOpts");
   if (opts) opts.classList.toggle("is-running", !!m.running);
   $("guardRefresh").disabled = !!(m.loading || m.kicking);
@@ -1009,9 +1149,9 @@ function renderGuardModal() {
       for (const s of rows) {
         const sid = s.sessionId || "";
         const on = m.kickChecked.has(sid) ? " checked" : "";
-        html += `<li class="session-row selectable${on ? " picked" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}"><label class="session-pick">` +
+        html += `<li class="session-row selectable${on ? " picked" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
           `<input type="checkbox" class="kickchk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
-          sessionRowHtml(s, { mineKind, keepIds, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
+          sessionRowHtml(s, { mineKind, hasToolMark, keepIds, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
           `</label></li>`;
       }
       html += `</ul>`;
@@ -1056,9 +1196,9 @@ function renderGuardModal() {
         const sid = s.sessionId || "";
         const on = m.checked.has(sid) ? " checked" : "";
         html +=
-          `<li class="session-row selectable${on ? " kept" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}"><label class="session-pick">` +
+          `<li class="session-row selectable${on ? " kept" : ""}${isRecentLoginRow(s) ? " recent-login" : ""}${s && s.freshMark === "fresh" ? " fresh-token" : ""}"><label class="session-pick">` +
           `<input type="checkbox" class="guardchk" data-sid="${esc(sid)}"${on}${busy ? " disabled" : ""} />` +
-          sessionRowHtml(s, { mineKind, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
+          sessionRowHtml(s, { mineKind, hasToolMark, accountId: id, sessions: rows, ...recentLoginRowOpts() }) +
           `<span class="pick-tag ${on ? "ok" : "bad"}">${on ? "保留" : "将被踢"}</span></label></li>`;
       }
       html += `</ul>`;
@@ -1068,8 +1208,15 @@ function renderGuardModal() {
       const hints = [];
       if (isLocal) {
         const nClient = rows.filter((s) => s.type === "client").length;
-        if (nClient === 1) hints.push("已标出本机：云端只有一条客户端会话，对应本机 Cursor。");
-        else if (nClient > 1) hints.push("本机 Cursor 正登录此号：客户端会话都标了「可能是本机」（接口不区分电脑）。请自行确认后勾选要保留的；默认已勾全部客户端。");
+        const pinned = rows.filter((s) => s.localMark === "local");
+        if (pinned.length === 1 && nClient > 1) {
+          const host = pinned[0].localHost ? `（${pinned[0].localHost}）` : "";
+          hints.push(`已用本机 Cursor 登录票对上一条客户端，标为「本机」${host}。本工具若另开了一条客户端会标「本工具」，刚刷出来的会标「刚换票」并排到前面——这是同一台电脑上的两个会话，不是两台电脑。其余才是共号的其他设备。`);
+        } else if (nClient === 1) {
+          hints.push("已标出本机：云端只有一条客户端会话，对应本机 Cursor。");
+        } else if (nClient > 1) {
+          hints.push("本机 Cursor 正登录此号，但签发时间没对上唯一一条：客户端都标了「可能是本机」（接口不区分电脑）。请自行确认后勾选要保留的；不要用一键保护硬猜。");
+        }
       }
       if (g.wasRunning && (g.keepIds || []).length) hints.push("上次退出时保护开着：已回填当时的勾选，需重新点「启动保护」。");
       else if (g.saved && (g.keepIds || []).length) hints.push("已回填上次的勾选。");
@@ -1138,7 +1285,13 @@ async function loadGuardSessions() {
       const saved = (g.keepIds || []).filter((sid) => present.has(sid));
       const picked = new Set(saved);
       if (!picked.size && localUserId && id === localUserId) {
-        for (const s of rows) if (s.type === "client") picked.add(s.sessionId);
+        const pinned = rows.filter((s) => s.localMark === "local").map((s) => s.sessionId).filter(Boolean);
+        if (pinned.length) {
+          for (const sid of pinned) picked.add(sid);
+          for (const s of rows) if (s.toolMark === "tool" && s.sessionId) picked.add(s.sessionId);
+        } else {
+          for (const s of rows) if (s.type === "client") picked.add(s.sessionId);
+        }
       }
       guardModal.checked = picked;
       guardModal.prechecked = true;
@@ -1149,6 +1302,19 @@ async function loadGuardSessions() {
   }
   renderGuardModal();
   render();
+}
+
+async function reloadOpenDeviceLists(id) {
+  const sid = String(id || "");
+  if (!sid) return;
+  const sessionMask = $("sessionMask");
+  const guardMask = $("guardMask");
+  if (sessionModal.id === sid && sessionMask && !sessionMask.hidden) {
+    await loadSessions();
+  }
+  if (guardModal.id === sid && guardMask && !guardMask.hidden) {
+    await loadGuardSessions();
+  }
 }
 
 function isGuardPanelOpen() {
@@ -1200,10 +1366,11 @@ function openGuardFromGlobal() {
   if (id) openGuard(id);
 }
 
-async function openGuard(id) {
+async function openGuard(id, opts) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
   setMainTab("accounts");
+  const keepIds = opts && Array.isArray(opts.keepIds) ? opts.keepIds.map((sid) => String(sid || "").trim()).filter(Boolean) : null;
   const same = guardModal.id === id && isGuardPanelOpen();
   if (!same) {
     guardModal.id = id;
@@ -1222,6 +1389,10 @@ async function openGuard(id) {
     guardModal.kickChecked = new Set();
     guardModal.recentAt = 0;
     guardModal.recentSec = clampLoginDetectSec(settings.loginDetectSec);
+  }
+  if (keepIds) {
+    guardModal.checked = new Set(keepIds);
+    guardModal.prechecked = true;
   }
   const mask = $("guardMask");
   const card = $("guardCard");
@@ -1314,16 +1485,18 @@ function onGuardBodyChange(e) {
 function keepLocalOnly() {
   const rows = guardModal.sessions || [];
   const id = guardModal.id;
-  const picked = new Set();
+  const exact = [];
+  const tools = [];
   for (const s of rows) {
     const mark = resolveLocalMark(s, { accountId: id, sessions: rows });
-    if (mark === "local" || mark === "maybe-local") picked.add(s.sessionId);
+    if (mark === "local" && s.sessionId) exact.push(s.sessionId);
+    if (s.toolMark === "tool" && s.sessionId) tools.push(s.sessionId);
   }
-  if (!picked.size) {
-    toast("当前看不出哪台是本机，请手动勾选要保留的");
+  if (!exact.length) {
+    toast("认不出本机 Cursor 那条客户端，请手动勾选要保留的。不要在认不出时硬留一台。");
     return;
   }
-  guardModal.checked = picked;
+  guardModal.checked = new Set(exact.concat(tools));
   guardModal.warnEmpty = false;
   guardModal.confirmKick = false;
   renderGuardModal();
@@ -1395,6 +1568,41 @@ async function startGuard() {
   toast(`已开启本机保护：保留 ${keep.length} 台，${guardIntervalLabel(seconds)}，并自动下线其他设备` + (others ? `（当前将踢 ${others} 台）` : ""));
   if (guardModal.id === id) guardModal.running = true;
   await refreshGuardStatus(true);
+}
+
+async function pinLocalGuard(id) {
+  if (busy || pinBusyIds.has(id)) return;
+  if (!localUserId || id !== localUserId) {
+    toast("请先在本机 Cursor 登录这个号");
+    return;
+  }
+  const bridge = api();
+  if (!bridge || !bridge.device_guard_pin_local) {
+    toast("当前版本不支持一键本机保护");
+    return;
+  }
+  pinBusyIds.add(id);
+  render();
+  toast("正在识别本机 Cursor…");
+  const step = setTimeout(() => toast("正在核对本机与本工具会话…"), 500);
+  let res = null;
+  try {
+    res = await bridge.device_guard_pin_local(id, GUARD_INTERVAL_SEC_DEFAULT);
+  } catch (e) {
+    res = { ok: false, error: String(e) };
+  } finally {
+    clearTimeout(step);
+    pinBusyIds.delete(id);
+    render();
+  }
+  if (!res || !res.ok) {
+    toast((res && res.error) || "认不出本机 Cursor 那条客户端，未开启保护");
+    return;
+  }
+  const kept = (res.keepIds || []).length;
+  toast(kept > 1 ? `已保留本机 Cursor 和本工具（${kept} 条），并开启保护` : "已保留本机 Cursor 并开启保护");
+  await refreshGuardStatus(true);
+  await openGuard(id, { keepIds: res.keepIds || [] });
 }
 
 async function stopGuard(id) {
@@ -1563,10 +1771,9 @@ function rowMainActions(a, st) {
   const guarding = !!(g && g.running);
   const dis = !!busy;
   return [
-    { act: "claim", label: "领取", cls: "primary", title: "领取 Sand 资格", disabled: dis },
     { act: "verify", label: "验证", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
     { act: "switch", label: "切号", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
-    { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending）" },
+    { act: "loginBot", label: "登录 Bot", title: webTok ? "网站会话：先换客户端票，再写入 Grok Bot 的 Cursor 账户并切换（不关 Cursor）" : "写入 Grok Bot 自带账户列表并切换（不关 Cursor）", disabled: dis },
     { act: "devices", label: "查看设备", title: "实时查看云端登录设备，可踢下线（成功后应立刻从列表消失）" },
     {
       act: "guard",
@@ -1576,62 +1783,162 @@ function rowMainActions(a, st) {
         ? `打开本机保护抽屉（运行中：已踢 ${(g && g.kickedCount) || 0} 台）。停止保护在抽屉里操作`
         : "从右侧打开本机保护抽屉：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备",
     },
-    { act: "remove", label: "移除", cls: "danger", disabled: dis },
   ];
 }
 
-function rowSideActions(a, st) {
+function ticketMenuGroups(a, st) {
+  const tokenOn = rowTokensOn(a.id);
+  const spec = {
+    pills: a.hasRefresh ? ["已有 Refresh"] : ["未探测 Refresh"],
+    groups: [],
+  };
+  if (tokenOn) spec.pills.push("Token 已展开");
   const dis = !!busy;
-  return [
+  const probe = {
+    act: "probeRefresh",
+    label: "探测票",
+    title: "从本机 Cursor 或已存数据探测并记录 refresh_token",
+    disabled: dis,
+  };
+  const refresh = {
+    act: "refreshLogin",
+    label: "刷登录票",
+    title: "只换新的 access_token，不踢设备",
+    disabled: dis || !a.hasRefresh,
+  };
+  const kick = {
+    act: "refreshLoginKickOld",
+    label: "刷票并踢旧",
+    title: "先换新登录票，成功后再立刻踢掉本工具旧客户端。官方换票会新开一台 Desktop App。不会动 Cursor IDE",
+    disabled: dis || !a.hasRefresh,
+  };
+  if (a.hasRefresh) {
+    refresh.cls = "primary";
+    probe.span = true;
+    spec.groups.push({
+      id: "swap",
+      title: "换票",
+      hint: "刷票会多一台 Desktop App；踢旧只踢本工具，不踢 IDE",
+      items: [refresh, kick, probe],
+    });
+  } else {
+    probe.cls = "primary";
+    probe.span = true;
+    spec.groups.push({
+      id: "swap",
+      title: "换票",
+      hint: "刷票会多一台 Desktop App；踢旧只踢本工具，不踢 IDE",
+      items: [probe, refresh, kick],
+    });
+  }
+  const view = [
     {
-      act: "probeRefresh",
-      label: "探测票",
-      title: "从本机 Cursor 或已存数据探测并记录 refresh_token",
-      disabled: dis,
+      act: "showToken",
+      label: tokenOn ? "隐藏 Token" : "显示 Token",
+      title: "显示或隐藏 Worksession / Refresh token",
+      keepOpen: true,
     },
-    {
-      act: "refreshLogin",
-      label: "刷登录票",
-      title: "用已记录的 refresh_token 换取新的 access_token",
-      disabled: dis || !a.hasRefresh,
-    },
-    { act: "browser", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
     { act: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
+    { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台" },
+    { act: "browser", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
   ];
+  if (claimVisible(st)) {
+    view.push({ act: "claim", label: "领取", title: "领取 Sand 资格", disabled: dis, span: true });
+  }
+  spec.groups.push({ id: "view", title: "查看", items: view });
+  spec.groups.push({
+    id: "danger",
+    title: "",
+    kind: "danger",
+    items: [{ act: "remove", label: "移除这个账号", cls: "danger", disabled: dis, span: true }],
+  });
+  return spec;
 }
 
-function rowActions(a, st) {
-  return rowMainActions(a, st).concat(rowSideActions(a, st));
+function ticketMenuHtml(a) {
+  return `<button type="button" class="btn tiny" data-act="ticketMenu" data-id="${esc(a.id)}" title="探测 / 刷票 / Token / 领取 / 进控制台">登录票 ▾</button>`;
 }
 
-function actionButtonsHtml(id, list) {
+function actionButtonsHtml(id, list, opts) {
+  const tiny = !(opts && opts.tiny === false);
   return list
-    .map(
-      (b) =>
-        `<button type="button" class="btn tiny${b.cls ? " " + b.cls : ""}" data-act="${b.act}" data-id="${esc(id)}"` +
-        `${b.disabled ? " disabled" : ""}${b.title ? ` title="${esc(b.title)}"` : ""}>${esc(b.label)}</button>`
-    )
+    .map((b) => {
+      const cls = ["btn", tiny ? "tiny" : "", b.cls || "", b.span ? "span2" : ""].filter(Boolean).join(" ");
+      return (
+        `<button type="button" class="${cls}" data-act="${b.act}" data-id="${esc(id)}"` +
+        `${b.disabled ? " disabled" : ""}` +
+        `${b.keepOpen ? ' data-keep-open="1"' : ""}` +
+        `${b.title ? ` title="${esc(b.title)}"` : ""}>${esc(b.label)}</button>`
+      );
+    })
     .join("\n");
+}
+
+function menuGroupsHtml(id, spec) {
+  const pills = (spec.pills || [])
+    .map((p) => {
+      const cls = p.indexOf("未探测") >= 0 ? "warn" : p.indexOf("已有") >= 0 ? "ok" : "idle";
+      return `<span class="pill mini ${cls}">${esc(p)}</span>`;
+    })
+    .join("");
+  const groups = (spec.groups || [])
+    .map((g) => {
+      const title = g.title ? `<div class="menu-group-title">${esc(g.title)}</div>` : "";
+      const hint = g.hint ? `<p class="menu-group-hint">${esc(g.hint)}</p>` : "";
+      const kind = g.kind ? ` ${esc(g.kind)}` : "";
+      return (
+        `<section class="menu-group${kind}">${title}${hint}` +
+        `<div class="menu-group-acts">${actionButtonsHtml(id, g.items, { tiny: false })}</div></section>`
+      );
+    })
+    .join("");
+  return { pills, body: `<div class="menu-sheet">${groups}</div>` };
+}
+
+function fillActionSheet(id, title, sub, spec) {
+  $("menuTitle").textContent = title;
+  $("menuSub").textContent = sub || "";
+  const painted = menuGroupsHtml(id, spec);
+  $("menuMeta").innerHTML = painted.pills;
+  $("menuBody").innerHTML = painted.body;
+  $("menuMask").hidden = false;
+}
+
+function openTicketMenu(id) {
+  const a = accounts.find((x) => x.id === id);
+  if (!a) return;
+  menuKind = "ticket";
+  fillActionSheet(id, "登录票", accountMail(a, id), ticketMenuGroups(a, rowState[id]));
 }
 
 function openRowMenu(id) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
-  $("menuTitle").textContent = accountMail(a, id);
-  $("menuSub").textContent = a.id;
-  $("menuBody").innerHTML = actionButtonsHtml(id, rowActions(a, rowState[id]));
-  $("menuMask").hidden = false;
+  menuKind = "row";
+  const spec = ticketMenuGroups(a, rowState[id]);
+  spec.groups = [{ id: "account", title: "账号", items: rowMainActions(a, rowState[id]) }].concat(spec.groups);
+  fillActionSheet(id, accountMail(a, id), a.id, spec);
 }
 
 function hideRowMenu() {
   $("menuMask").hidden = true;
+  menuKind = "";
 }
 
-function onMenuClick(e) {
+async function onMenuClick(e) {
   const btn = e.target.closest("button[data-act]");
-  if (!btn) return;
-  hideRowMenu();
-  dispatchAction(btn.getAttribute("data-act"), btn.getAttribute("data-id"));
+  if (!btn || btn.disabled) return;
+  const act = btn.getAttribute("data-act");
+  const id = btn.getAttribute("data-id");
+  const keep = btn.getAttribute("data-keep-open") === "1" || act === "showToken";
+  const kind = menuKind;
+  if (!keep) hideRowMenu();
+  const ret = dispatchAction(act, id, btn);
+  if (keep) {
+    await Promise.resolve(ret);
+    if (kind === "ticket") openTicketMenu(id);
+    else if (kind === "row") openRowMenu(id);
+  }
 }
 
 // 一个池子一行：标签 + 百分比 + 细条。三池互不相加。
@@ -1774,7 +2081,8 @@ function planCell(st) {
   return parts.length ? parts.join(" ") : `<span class="hint">—</span>`;
 }
 
-// 列表排序：有剩余时间的按最快到期在前；没数据的其次；失效的最后。
+// 点表头时：剩余时间最短在前；Bot 用量高的在前；导入时间新的在前。
+// 打开列表时，本机 Cursor 当前登录的账号固定在最上面，其余按导入时间，新添加的在上。
 function sortRank(a) {
   const st = rowState[a.id];
   if (st && st.alive === false) return [2, 0];
@@ -1784,14 +2092,25 @@ function sortRank(a) {
 
 function orderedAccounts() {
   return accounts
-    .map((a, i) => ({ a, i, r: sortRank(a) }))
-    .sort((x, y) => x.r[0] - y.r[0] || x.r[1] - y.r[1] || x.i - y.i)
+    .map((a, i) => ({ a, i }))
+    .sort((x, y) => {
+      const px = localUserId && x.a.id === localUserId ? 0 : 1;
+      const py = localUserId && y.a.id === localUserId ? 0 : 1;
+      if (px !== py) return px - py;
+      const cmp = compareAccounts(x.a, y.a, x.i, y.i);
+      return listSort.dir < 0 ? -cmp : cmp;
+    })
     .map((o) => o.a);
+}
+
+function visibleAccounts() {
+  return orderedAccounts().filter(accountMatches);
 }
 
 function render() {
   const tbody = $("rows");
-  tbody.innerHTML = orderedAccounts()
+  const shown = visibleAccounts();
+  tbody.innerHTML = shown
     .map((a) => {
       const st = rowState[a.id];
       const mail = a.label && a.label.includes("@") ? a.label : a.label || a.id;
@@ -1811,19 +2130,13 @@ function render() {
         `<span title="导入时间">导入 ${esc(addedAt || "—")}</span>` +
         (checkedAt ? `<span title="上次验证时间">验证 ${esc(checkedAt)}</span>` : "") +
         `</div>`;
-      const sideBtns = actionButtonsHtml(a.id, rowSideActions(a, st));
-      const tokenBtn =
-        `<div class="token-toggle">` +
-        `<button type="button" class="btn tiny${rowTokensOn(a.id) ? " primary" : ""}" data-act="showToken" data-id="${esc(a.id)}" title="显示或隐藏 Worksession / Refresh token">${rowTokensOn(a.id) ? "隐藏 Token" : "显示 Token"}</button>` +
-        sideBtns +
-        `</div>`;
       const dead = st && st.alive === false;
       const dis = busy ? " disabled" : "";
       const guarding = !!(guardStatus[a.id] && guardStatus[a.id].running);
       const rowCls = [dead ? "dead" : "", guarding ? "guarding" : ""].filter(Boolean).join(" ");
       return `<tr data-id="${esc(a.id)}"${rowCls ? ` class="${rowCls}"` : ""}>
         <td class="col-chk"><input type="checkbox" class="rowchk" data-id="${esc(a.id)}"${checked}${dis} /></td>
-        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}${tokenBtn}
+        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}${ticketMenuHtml(a)}
           <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></td>
         <td>${planCell(st)}</td>
         <td>${expiryCell(a, st)}</td>
@@ -1835,39 +2148,68 @@ function render() {
       </tr>${tokenCell(a)}`;
     })
     .join("");
-  $("emptyHint").hidden = accounts.length > 0;
-  $("countPill").textContent = accounts.length + " 个";
+  const empty = $("emptyHint");
+  const filterEmpty = $("filterEmpty");
+  if (empty) empty.hidden = accounts.length > 0;
+  if (filterEmpty) filterEmpty.hidden = !(accounts.length > 0 && shown.length === 0);
+  $("countPill").textContent = (listFilter !== "all" || listQuery ? shown.length + " / " : "") + accounts.length + " 个";
   syncSelectAll();
+  syncBatchButtons();
+  syncSortHeaders();
+  syncFilterChrome();
   updateStats();
 }
 
 function syncSelectAll() {
   const all = $("chkAll");
   if (!all) return;
-  const n = accounts.length;
-  const sel = accounts.filter((a) => selected.has(a.id)).length;
+  const vis = visibleAccounts();
+  const n = vis.length;
+  const sel = vis.filter((a) => selected.has(a.id)).length;
   all.checked = n > 0 && sel === n;
   all.indeterminate = sel > 0 && sel < n;
 }
 
+function syncBatchButtons() {
+  const none = selectedIds().length === 0 || busy;
+  const noAcct = accounts.length === 0 || busy;
+  ["btnVerify", "btnClaimAll", "btnGuardSel", "btnGuardStopSel", "btnRemoveSel"].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = none;
+  });
+  if ($("btnExport")) $("btnExport").disabled = noAcct;
+  if ($("btnClear")) $("btnClear").disabled = noAcct;
+}
+
+function syncSortHeaders() {
+  document.querySelectorAll("th.sortable").forEach((th) => {
+    const key = th.getAttribute("data-sort");
+    if (listSort.key !== key) {
+      th.removeAttribute("aria-sort");
+      return;
+    }
+    const desc = key === "added" ? listSort.dir > 0 : listSort.dir < 0;
+    th.setAttribute("aria-sort", desc ? "descending" : "ascending");
+  });
+}
+
 function updateStats() {
-  let done = 0;
-  let card = 0;
-  let alive = 0;
+  let expiring = 0;
   let dead = 0;
+  let guarding = 0;
+  let botFull = 0;
   for (const a of accounts) {
     const st = rowState[a.id];
-    if (!st) continue;
-    if (st.kind === "ok") done += 1;
-    else if (st.kind === "card") card += 1;
-    if (st.alive === true) alive += 1;
-    else if (st.alive === false) dead += 1;
+    if (st && st.alive === false) dead += 1;
+    if (guardStatus[a.id] && guardStatus[a.id].running) guarding += 1;
+    if (isBotFull(st)) botFull += 1;
+    if (isExpiring(a, st)) expiring += 1;
   }
-  $("statTotal").textContent = accounts.length;
-  $("statAlive").textContent = alive;
-  $("statDead").textContent = dead;
-  $("statDone").textContent = done;
-  $("statCard").textContent = card;
+  if ($("statTotal")) $("statTotal").textContent = accounts.length;
+  if ($("statExpiring")) $("statExpiring").textContent = expiring;
+  if ($("statDead")) $("statDead").textContent = dead;
+  if ($("statGuard")) $("statGuard").textContent = guarding;
+  if ($("statBotFull")) $("statBotFull").textContent = botFull;
 }
 
 // ---- 状态写入：全部「合并」进现有行状态，领取 / 验证 / 轻量刷新互不冲掉对方的数据 ----
@@ -2091,8 +2433,13 @@ async function refreshLoginOne(id) {
     const res = await api().refresh_login_one(id);
     if (res && res.ok) {
       accounts = res.accounts || accounts;
-      toast("登录票已刷新" + (res.tokenType ? "（" + res.tokenType + "）" : ""));
+      toast(
+        "登录票已刷新" +
+          (res.tokenType ? "（" + res.tokenType + "）" : "") +
+          (res.usedAccessAsRefresh ? " · 旧 refresh 已被顶替，已改用当前登录票续期" : "")
+      );
       await loadTokenViews();
+      await reloadOpenDeviceLists(id);
       if (autoVerifyEnabled()) verifyOne(id);
       else render();
     } else {
@@ -2100,6 +2447,62 @@ async function refreshLoginOne(id) {
     }
   } catch (e) {
     toast("刷新失败：" + String(e));
+  }
+}
+
+async function refreshLoginKickOld(id) {
+  if (busy) return;
+  const bridge = api();
+  if (!bridge || !bridge.refresh_login_kick_old) {
+    toast("当前版本不支持刷票并踢旧");
+    return;
+  }
+  toast("正在换登录票…");
+  try {
+    const res = await bridge.refresh_login_kick_old(id);
+    if (res && res.ok) {
+      accounts = res.accounts || accounts;
+      if (res.droppedSessionId) {
+        toast(
+          "登录票已刷新，并已踢掉旧客户端" +
+            (res.usedAccessAsRefresh ? " · 旧 refresh 已被顶替" : "")
+        );
+      } else {
+        toast("登录票已刷新，但没踢到旧客户端：" + (res.kickError || "未知原因"));
+      }
+      await loadTokenViews();
+      await reloadOpenDeviceLists(id);
+      if (autoVerifyEnabled()) verifyOne(id);
+      else render();
+    } else {
+      toast("刷票并踢旧失败：" + ((res && res.error) || "未知原因"));
+    }
+  } catch (e) {
+    toast("刷票并踢旧失败：" + String(e));
+  }
+}
+
+function importPanelOpen() {
+  const card = $("importCard");
+  return !!(card && !card.classList.contains("is-collapsed"));
+}
+
+function setImportPanelOpen(open, persist) {
+  const card = $("importCard");
+  const btn = $("btnToggleImport");
+  if (!card) return;
+  const on = !!open;
+  card.classList.toggle("is-collapsed", !on);
+  if (btn) btn.setAttribute("aria-expanded", on ? "true" : "false");
+  if (persist !== false && settings.importOpen !== on) saveSettings({ importOpen: on });
+}
+
+function toggleImportPanel() {
+  const next = !importPanelOpen();
+  setImportPanelOpen(next);
+  if (next) {
+    const ta = $("tokenInput");
+    if (ta) ta.focus();
   }
 }
 
@@ -2127,37 +2530,114 @@ async function detectLocal() {
   }
 }
 
-function switchConfirmCopy(email, resetMid, webTok) {
+function loginBotConfirmCopy(email, resetMid, webTok, refreshFirst) {
+  const who = String(email || "").trim() || "该账号";
+  const lines = [
+    `确定用 ${who} 登录独立的 Grok Bot 客户端？`,
+    "不会关闭 Cursor。会把该号写入 Grok Bot 自带的「Cursor 账户」列表并切过去，然后重启 Grok Bot。",
+  ];
+  if (refreshFirst) {
+    lines.push("会先换新登录票，再用新票写入 Grok Bot。");
+  } else {
+    lines.push("不会换新登录票，用的是列表里当前这张票。");
+  }
+  if (webTok) lines.push("这是网站会话票，会先换成客户端票再写入 Grok Bot。");
+  if (resetMid) lines.push("「切号重置机器码」对登录 Bot 无效：不会改 Cursor 的机器码。");
+  return lines;
+}
+
+function switchConfirmCopy(email, resetMid, webTok, refreshFirst) {
   const who = String(email || "").trim() || "该账号";
   const lines = [
     `确定把本机 Cursor 切到 ${who}？`,
     "会先关掉当前 Cursor，写入登录态后再自动重启。",
   ];
+  if (refreshFirst) {
+    lines.push("会先换新登录票，再用新票写入 Cursor，本机标签会落在最新那台设备上。");
+  } else {
+    lines.push("不会换新登录票，写入的是列表里当前这张票。");
+  }
   if (webTok) lines.push("这是网站会话，切号时会先换成客户端登录票，大约多几秒。");
   if (resetMid) lines.push("已勾选「切号重置机器码」，本机机器码也会一起换掉。");
   return lines;
 }
 
+function syncSwitchKickOldEnabled() {
+  const refresh = $("switchRefreshFirstChk");
+  const kick = $("switchKickOldChk");
+  if (!kick) return;
+  const on = !!(refresh && refresh.checked);
+  kick.disabled = !on;
+}
+
 let pendingSwitchId = null;
+let pendingSwitchKind = "switch";
+
+function paintSwitchConfirmChrome() {
+  const title = $("switchConfirmTitle");
+  const ok = $("switchConfirmOk");
+  const urlWrap = $("loginBotUrlWrap");
+  const opts = $("switchConfirmOpts");
+  if (urlWrap) urlWrap.hidden = true;
+  const inp = $("loginBotUrlInput");
+  if (inp) inp.value = "";
+  const loginBot = pendingSwitchKind === "loginBot";
+  if (opts) opts.hidden = loginBot;
+  if (loginBot) {
+    if (title) title.textContent = "登录 Bot 确认";
+    if (ok) ok.textContent = "确认登录 Bot";
+  } else {
+    if (title) title.textContent = "切号确认";
+    if (ok) ok.textContent = "确认切号";
+  }
+}
+
+function paintSwitchConfirmBody() {
+  const id = pendingSwitchId;
+  if (!id) return;
+  const a = accounts.find((x) => x.id === id);
+  const resetMid = !!($("resetMidChk") && $("resetMidChk").checked);
+  const webTok = a && String(a.tokenType || "").toLowerCase() === "web";
+  const refreshFirst =
+    pendingSwitchKind === "loginBot"
+      ? true
+      : !!($("switchRefreshFirstChk") && $("switchRefreshFirstChk").checked);
+  const copyFn = pendingSwitchKind === "loginBot" ? loginBotConfirmCopy : switchConfirmCopy;
+  const body = $("switchConfirmBody");
+  if (body) {
+    body.innerHTML = copyFn(accountMail(a, id), resetMid, webTok, refreshFirst)
+      .map((line) => `<p class="hint">${esc(line)}</p>`)
+      .join("");
+  }
+  paintSwitchConfirmChrome();
+}
 
 function openSwitchConfirm(id) {
   if (!id) return;
   pendingSwitchId = id;
-  const a = accounts.find((x) => x.id === id);
-  const resetMid = !!($("resetMidChk") && $("resetMidChk").checked);
-  const webTok = a && String(a.tokenType || "").toLowerCase() === "web";
-  const body = $("switchConfirmBody");
-  if (body) {
-    body.innerHTML = switchConfirmCopy(accountMail(a, id), resetMid, webTok)
-      .map((line) => `<p class="hint">${esc(line)}</p>`)
-      .join("");
-  }
+  pendingSwitchKind = "switch";
+  const refreshChk = $("switchRefreshFirstChk");
+  const kickChk = $("switchKickOldChk");
+  if (refreshChk) refreshChk.checked = true;
+  if (kickChk) kickChk.checked = true;
+  syncSwitchKickOldEnabled();
+  paintSwitchConfirmBody();
+  const el = $("switchConfirmMask");
+  if (el) el.hidden = false;
+}
+
+function openLoginBotConfirm(id) {
+  if (!id) return;
+  pendingSwitchId = id;
+  pendingSwitchKind = "loginBot";
+  paintSwitchConfirmBody();
   const el = $("switchConfirmMask");
   if (el) el.hidden = false;
 }
 
 function hideSwitchConfirm() {
   pendingSwitchId = null;
+  pendingSwitchKind = "switch";
   const el = $("switchConfirmMask");
   if (el) el.hidden = true;
 }
@@ -2169,26 +2649,39 @@ function isSwitchConfirmOpen() {
 
 function confirmSwitch() {
   const id = pendingSwitchId;
+  const kind = pendingSwitchKind;
+  const refreshFirst = !!($("switchRefreshFirstChk") && $("switchRefreshFirstChk").checked);
+  const kickOld =
+    refreshFirst && !!($("switchKickOldChk") && $("switchKickOldChk").checked);
   hideSwitchConfirm();
-  if (id) switchAccount(id);
+  if (!id) return;
+  if (kind === "loginBot") loginBot(id, true, false);
+  else switchAccount(id, refreshFirst, kickOld);
 }
 
-async function switchAccount(id) {
+async function switchAccount(id, refreshFirst, kickOld) {
   const resetMid = !!($("resetMidChk") && $("resetMidChk").checked);
   const a = accounts.find((x) => x.id === id);
   const webTok = a && String(a.tokenType || "").toLowerCase() === "web";
+  const willRefresh = refreshFirst !== false;
+  const willKick = willRefresh && !!kickOld;
   toast(
-    (webTok ? "网站会话切号：正在换客户端登录票（约几秒）… " : "") +
+    (willRefresh ? "正在换新登录票并切号… " : "") +
+      (webTok ? "网站会话切号：正在换客户端登录票（约几秒）… " : "") +
       (resetMid ? "正在切号并重置机器码，Cursor 将自动重启…" : "正在切号，Cursor 将自动重启…")
   );
   try {
-    const res = await api().switch_account(id, resetMid);
+    const res = await api().switch_account(id, resetMid, willRefresh, willKick);
     if (res && res.ok) {
-      toast(
-        `已切换到 ${res.email || id}${res.resetMachineId ? "（已重置机器码）" : ""}` +
-          `${res.exchanged ? "（网站会话已换客户端票）" : ""}，Cursor 正在重启` +
-          (res.warning ? "　⚠ " + res.warning : "")
-      );
+      const bits = ["已切换到 " + (res.email || id)];
+      if (res.refreshed) bits.push("已换新登录票");
+      if (res.droppedSessionId) bits.push("已踢旧客户端");
+      if (res.pinnedSessionId) bits.push("本机已标在最新设备");
+      if (res.resetMachineId) bits.push("已重置机器码");
+      if (res.exchanged) bits.push("网站会话已换客户端票");
+      bits.push("Cursor 正在重启");
+      toast(bits.join(" · ") + (res.warning ? "　⚠ " + res.warning : ""));
+      applySessionBlock(id, res);
       await refreshLocalIdentity();
       render();
     } else {
@@ -2196,6 +2689,37 @@ async function switchAccount(id) {
     }
   } catch (e) {
     toast("切号失败：" + String(e));
+  }
+}
+
+async function loginBot(id, refreshFirst, kickOld) {
+  const resetMid = !!($("resetMidChk") && $("resetMidChk").checked);
+  const a = accounts.find((x) => x.id === id);
+  const webTok = a && String(a.tokenType || "").toLowerCase() === "web";
+  const willRefresh = refreshFirst !== false;
+  const willKick = willRefresh && !!kickOld;
+  toast(
+    (willRefresh ? "正在换新登录票并登录 Bot… " : "") +
+      (webTok ? "网站会话：正在换客户端票… " : "") +
+      "正在写入 Grok Bot 账户列表并重启客户端（不会关闭 Cursor）…"
+  );
+  try {
+    const res = await api().login_bot(id, resetMid, willRefresh, willKick);
+    if (res && res.ok) {
+      const bits = ["已写入 Grok Bot 账户并切换：" + (res.email || id)];
+      if (res.refreshed) bits.push("已换新登录票");
+      if (res.droppedSessionId) bits.push("已踢旧客户端");
+      if (res.exchanged) bits.push("网站会话已换客户端票");
+      bits.push("Grok Bot 正在重启");
+      toast(bits.join(" · ") + (res.warning ? "　⚠ " + res.warning : ""));
+      applySessionBlock(id, res);
+      await refreshLocalIdentity();
+      render();
+    } else {
+      toast("登录 Bot 失败：" + ((res && res.error) || "未知原因"));
+    }
+  } catch (e) {
+    toast("登录 Bot 失败：" + String(e));
   }
 }
 
@@ -2220,8 +2744,7 @@ function selectedIds() {
 }
 
 function targetIds() {
-  // 有勾选就只处理勾选的，否则处理全部。
-  return selected.size ? selectedIds() : accounts.map((a) => a.id);
+  return selectedIds();
 }
 
 function readConcurrency() {
@@ -2237,7 +2760,7 @@ async function runBatch(kind, idsOverride) {
   const known = new Set(accounts.map((a) => a.id));
   const ids = idsOverride ? idsOverride.filter((id) => known.has(id)) : targetIds();
   if (ids.length === 0) {
-    toast("没有可处理的账号");
+    toast(idsOverride ? "没有可处理的账号" : "先勾选要处理的账号");
     return;
   }
   const conc = readConcurrency();
@@ -2296,7 +2819,7 @@ async function runBatch(kind, idsOverride) {
   busy = false;
   render();
   setTimeout(() => (wrap.hidden = true), 1500);
-  const scope = idsOverride ? "（刚导入）" : selected.size ? "（仅选中）" : "";
+  const scope = idsOverride ? "（刚导入）" : "（仅选中）";
   if (kind === "claim") {
     toast(
       `领取完成 ${total} 个${scope}：新开通 ${tally.activated}，本来就已开通 ${tally.already}，` +
@@ -2329,7 +2852,7 @@ async function afterImport(res, verb) {
     toast(`${verb} ${ids.length} 个账号，正在自动验证…`);
     await runBatch("verify", ids);
   } else {
-    toast(`${verb} ${ids.length} 个账号（未自动验证，可点「验证账号」）`);
+    toast(`${verb} ${ids.length} 个账号（未自动验证，勾选后点「验证账号」）`);
   }
 }
 
@@ -2644,9 +3167,12 @@ function dispatchAction(act, id, btn) {
     openRowMenu(id);
     return;
   }
-  if (act === "showToken") {
-    toggleRowToken(id);
+  if (act === "ticketMenu") {
+    openTicketMenu(id);
     return;
+  }
+  if (act === "showToken") {
+    return toggleRowToken(id);
   }
   if (act === "copyToken") {
     copyTokenOne(id, btn && btn.getAttribute("data-kind"));
@@ -2669,6 +3195,8 @@ function dispatchAction(act, id, btn) {
     openLogin(id);
   } else if (act === "switch") {
     openSwitchConfirm(id);
+  } else if (act === "loginBot") {
+    openLoginBotConfirm(id);
   } else if (act === "copy") {
     copyAccount(id);
   } else if (act === "claim") {
@@ -2679,6 +3207,10 @@ function dispatchAction(act, id, btn) {
     probeRefreshOne(id);
   } else if (act === "refreshLogin") {
     refreshLoginOne(id);
+  } else if (act === "refreshLoginKickOld") {
+    refreshLoginKickOld(id);
+  } else if (act === "pinLocal") {
+    pinLocalGuard(id);
   }
 }
 
@@ -2687,13 +3219,14 @@ function onTableChange(e) {
   if (!chk) return;
   const id = chk.getAttribute("data-id");
   if (chk.checked) selected.add(id);
-  else selected.delete(id);
+  else   selected.delete(id);
   syncSelectAll();
+  syncBatchButtons();
 }
 
 function onSelectAll(e) {
-  if (e.target.checked) accounts.forEach((a) => selected.add(a.id));
-  else selected.clear();
+  if (e.target.checked) visibleAccounts().forEach((a) => selected.add(a.id));
+  else visibleAccounts().forEach((a) => selected.delete(a.id));
   render();
 }
 
@@ -2986,13 +3519,82 @@ function onApiKeyListClick(e) {
   else if (act === "removeApiKey") removeApiKey(id);
 }
 
-function showHelp() {
+function paintHelpJobs() {
+  const box = $("helpJobs");
+  if (!box) return;
+  if (!helpJobs.length) {
+    helpJobs = [
+      { title: "看额度", body: "导入或探测本机账号后点「验证」，看 Bot / Auto / 高级 三池和到期日。验证只读，不会领取。" },
+      { title: "切到本机", body: "点该号「切号」。会先关掉当前 Cursor，写入登录态后再打开。默认先换新登录票。" },
+      { title: "守设备", body: "先在本机 Cursor 登录该号，再打开「本机保护」勾选要留的设备。一键本机保护在抽屉里，避免误踢 IDE。" },
+    ];
+  }
+  box.innerHTML = helpJobs
+    .map((j) => `<div class="help-job"><b>${esc(j.title || "")}</b><span>${esc(j.body || "")}</span></div>`)
+    .join("");
+}
+
+function setHelpDetailOpen(open) {
+  const detail = $("helpDetail");
+  const more = document.querySelector(".help-more-row");
+  if (detail) detail.hidden = !open;
+  if (more) more.hidden = !!open;
+}
+
+function showHelp(full) {
   $("helpMask").hidden = false;
+  paintHelpJobs();
+  setHelpDetailOpen(full === true);
 }
 
 function hideHelp() {
   $("helpMask").hidden = true;
   if ($("helpHide").checked) saveSettings({ hideHelp: true });
+}
+
+async function applyAppInfo() {
+  try {
+    const info = await api().app_info();
+    if (info && info.version && $("appVersion")) $("appVersion").textContent = "v" + info.version;
+    if (info && Array.isArray(info.helpJobs)) helpJobs = info.helpJobs;
+    paintHelpJobs();
+  } catch (e) {}
+}
+
+function applyNoticeHidden() {
+  const el = $("freeNotice");
+  if (el) el.hidden = !!settings.hideNotice;
+}
+
+function onSortHeaderClick(e) {
+  const th = e.target.closest("th.sortable");
+  if (!th) return;
+  const key = th.getAttribute("data-sort");
+  if (!key) return;
+  if (listSort.key === key) listSort.dir *= -1;
+  else {
+    listSort.key = key;
+    listSort.dir = 1;
+  }
+  render();
+}
+
+function setListFilter(filt) {
+  listFilter = filt || "all";
+  render();
+}
+
+function closeToolbarMore() {
+  const el = $("toolbarMore");
+  if (el) el.open = false;
+}
+
+function syncFilterChrome() {
+  const sel = $("acctFilter");
+  if (sel && sel.value !== listFilter) sel.value = listFilter;
+  document.querySelectorAll(".hero-stats .stat").forEach((el) => {
+    el.classList.toggle("is-on", el.getAttribute("data-filter") === listFilter);
+  });
 }
 
 function showQuitConfirm() {
@@ -3027,7 +3629,53 @@ async function boot() {
   if (bridge && bridge.mark_ui_ready) {
     try { await bridge.mark_ui_ready(); } catch (e) {}
   }
-  $("btnHelp").addEventListener("click", showHelp);
+  $("btnHelp").addEventListener("click", () => showHelp(true));
+  $("btnToggleImport").addEventListener("click", toggleImportPanel);
+  const btnHideNotice = $("btnHideNotice");
+  if (btnHideNotice) {
+    btnHideNotice.addEventListener("click", () => {
+      saveSettings({ hideNotice: true });
+      applyNoticeHidden();
+    });
+  }
+  const btnEmptyDetect = $("btnEmptyDetect");
+  if (btnEmptyDetect) btnEmptyDetect.addEventListener("click", detectLocal);
+  const btnEmptyPaste = $("btnEmptyPaste");
+  if (btnEmptyPaste) {
+    btnEmptyPaste.addEventListener("click", () => {
+      setImportPanelOpen(true);
+      const ta = $("tokenInput");
+      if (ta) ta.focus();
+    });
+  }
+  const btnHelpDetail = $("btnHelpDetail");
+  if (btnHelpDetail) btnHelpDetail.addEventListener("click", () => setHelpDetailOpen(true));
+  const acctSearch = $("acctSearch");
+  if (acctSearch) {
+    acctSearch.addEventListener("input", () => {
+      listQuery = acctSearch.value || "";
+      render();
+    });
+  }
+  const acctFilter = $("acctFilter");
+  if (acctFilter) {
+    acctFilter.addEventListener("change", () => {
+      setListFilter(acctFilter.value || "all");
+    });
+  }
+  const heroStats = document.querySelector(".hero-stats");
+  if (heroStats) {
+    heroStats.addEventListener("click", (e) => {
+      const stat = e.target.closest(".stat[data-filter]");
+      if (!stat) return;
+      const filt = stat.getAttribute("data-filter") || "all";
+      setListFilter(listFilter === filt && filt !== "all" ? "all" : filt);
+    });
+  }
+  const thead = document.querySelector("#paneAccounts thead");
+  if (thead) thead.addEventListener("click", onSortHeaderClick);
+  const moreMenu = document.querySelector(".toolbar-more-menu");
+  if (moreMenu) moreMenu.addEventListener("click", closeToolbarMore);
   const tabBar = document.querySelector(".tab-bar");
   if (tabBar) tabBar.addEventListener("click", onMainTabClick);
   $("btnDetectLocal").addEventListener("click", detectLocal);
@@ -3061,6 +3709,13 @@ async function boot() {
   $("switchConfirmMask").addEventListener("click", (e) => {
     if (e.target === $("switchConfirmMask")) hideSwitchConfirm();
   });
+  const switchRefreshChk = $("switchRefreshFirstChk");
+  if (switchRefreshChk) {
+    switchRefreshChk.addEventListener("change", () => {
+      syncSwitchKickOldEnabled();
+      if (isSwitchConfirmOpen()) paintSwitchConfirmBody();
+    });
+  }
   $("sessionOk").addEventListener("click", hideSessions);
   $("sessionRefresh").addEventListener("click", () => loadSessions());
   $("sessionBrowser").addEventListener("click", () => openSessionsPage(sessionModal.id));
@@ -3083,6 +3738,10 @@ async function boot() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if ($("menuMask") && !$("menuMask").hidden) {
+      hideRowMenu();
+      return;
+    }
     if ($("loginDetectMask") && !$("loginDetectMask").hidden) {
       hideLoginDetect();
       return;
@@ -3099,6 +3758,10 @@ async function boot() {
   $("guardBody").addEventListener("click", onGuardBodyClick);
   $("guardStart").addEventListener("click", startGuard);
   $("guardStop").addEventListener("click", () => guardModal.id && stopGuard(guardModal.id));
+  const guardPin = $("guardPinLocal");
+  if (guardPin) {
+    guardPin.addEventListener("click", () => guardModal.id && pinLocalGuard(guardModal.id));
+  }
   $("guardInterval").addEventListener("change", () => fillGuardIntervalSeconds(readGuardIntervalSeconds()));
   $("guardBody").addEventListener("change", onGuardBodyChange);
   $("guardGlobal").addEventListener("click", openGuardFromGlobal);
@@ -3110,6 +3773,9 @@ async function boot() {
   });
   $("menuClose").addEventListener("click", hideRowMenu);
   $("menuBody").addEventListener("click", onMenuClick);
+  $("menuMask").addEventListener("click", (e) => {
+    if (e.target === $("menuMask")) hideRowMenu();
+  });
   $("autoVerifyChk").addEventListener("change", (e) => saveSettings({ autoVerify: !!e.target.checked }));
   const btnShowTokens = $("btnShowTokens");
   if (btnShowTokens) {
@@ -3151,7 +3817,11 @@ async function boot() {
     settings = {};
   }
   $("autoVerifyChk").checked = settings.autoVerify !== false;
+  setImportPanelOpen(!!settings.importOpen, false);
   setMainTab(currentMainTab(), false);
+  applyNoticeHidden();
+  await applyAppInfo();
+  syncBatchButtons();
   const btnShowTokensBoot = $("btnShowTokens");
   if (btnShowTokensBoot) btnShowTokensBoot.setAttribute("aria-pressed", settings.showTokens ? "true" : "false");
   if ($("showTokensChk")) $("showTokensChk").checked = !!settings.showTokens;
@@ -3160,7 +3830,7 @@ async function boot() {
     await loadTokenViews();
     render();
   }
-  if (!settings.hideHelp) showHelp();
+  if (!settings.hideHelp) showHelp(false);
 }
 
 if (window.pywebview && window.pywebview.api) {

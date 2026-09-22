@@ -2148,20 +2148,26 @@ def close_cursor(layout: CursorLayout) -> int:
     raise SandToolError("当前仅支持 Windows 和 macOS")
 
 
-# 启动参数：--classic 让 Cursor 直接进经典 IDE/编辑器窗口，跳过新版 Agents 中枢窗口。
-# （官方设置「Open Agents Window on startup / Window Restoration」有会循环回 Agents 窗口的已知 bug，
-#  --classic 启动参数是稳定绕过方式。）
-CURSOR_START_ARGS: Tuple[str, ...] = ("--classic",)
+# 启动参数：--classic 让 Cursor 直接进经典 IDE/编辑器窗口。
+# 登录 Bot 走独立的 Grok Bot.app（见 grok_bot.py），不再靠省略 --classic。
+def cursor_start_args(*, classic: bool = True) -> Tuple[str, ...]:
+    if classic:
+        return ("--classic",)
+    return ()
 
 
-def start_cursor(layout: CursorLayout) -> bool:
+CURSOR_START_ARGS: Tuple[str, ...] = cursor_start_args(classic=True)
+
+
+def start_cursor(layout: CursorLayout, classic: bool = True) -> bool:
+    extra = cursor_start_args(classic=classic)
     try:
         if sys.platform == "win32":
             exe = str(layout.executable)
             try:
                 # 带 --classic 直接进 IDE；CREATE_NEW_PROCESS_GROUP 让 Cursor 脱离本工具独立存活。
                 subprocess.Popen(
-                    [exe, *CURSOR_START_ARGS],
+                    [exe, *extra],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -2176,8 +2182,11 @@ def start_cursor(layout: CursorLayout) -> bool:
             bundle = _find_app_bundle(layout.app_root)
             if bundle is None:
                 return False
+            cmd = [shutil.which("open") or "/usr/bin/open", "-a", str(bundle)]
+            if extra:
+                cmd.extend(["--args", *extra])
             subprocess.run(
-                [shutil.which("open") or "/usr/bin/open", "-a", str(bundle), "--args", *CURSOR_START_ARGS],
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
