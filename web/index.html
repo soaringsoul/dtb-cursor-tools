@@ -85,7 +85,7 @@
           <input type="search" id="acctSearch" placeholder="搜索邮箱 / user id" autocomplete="off" />
           <select id="acctFilter" title="筛选账号。付费含 Pro / Pro+ / Ultra / Team；Free 只含已验证的免费套餐">
             <option value="all">全部</option>
-            <option value="paid">付费账户</option>
+            <option value="paid" selected>付费账户</option>
             <option value="free">Free 账号</option>
             <option value="local">本机</option>
             <option value="guarding">保护中</option>
@@ -94,6 +94,11 @@
             <option value="botFull">Bot 用尽</option>
             <option value="card">需绑卡</option>
           </select>
+          <select id="tagFilter" title="按我的分类筛选。与左侧套餐筛选同时生效">
+            <option value="all">我的分类 · 全部</option>
+            <option value="none">未分类</option>
+          </select>
+          <button type="button" class="btn" id="btnManageTags" title="新增、改名或删除自定义分类">管理分类</button>
           <span class="hint" id="selHint">先勾选账号再批量操作。验证 / 领取 / 删除 / 保护都只处理勾选。</span>
         </div>
         <div class="toolbar-acts">
@@ -123,8 +128,7 @@
               <th class="sortable" data-sort="added" title="本机当前登录的账号固定在最上面，其余按导入时间，新的在上">账号 / 邮箱</th>
               <th>套餐</th>
               <th class="sortable" data-sort="remain" title="按剩余时间排序">订阅到期</th>
-              <th>Sand 状态</th>
-              <th class="col-quota sortable" data-sort="bot" title="按 Bot 周用量排序">额度（Bot 周 / Auto 月 / 高级 月）</th>
+              <th class="col-quota sortable" data-sort="bot" title="按 Bot 周用量排序">额度（Bot 周 / Auto 月 / 高级 月 / 超额）</th>
               <th class="col-act">操作</th>
             </tr>
           </thead>
@@ -242,11 +246,11 @@
         <p><b>常用操作</b></p>
         <ul>
           <li><b>导入账号</b>：粘贴 access_token / ws token / <code>邮箱----token</code>（每行一个），或「导入文件」选 cursor_accounts_*.json。导入后<b>自动验证</b>：识别邮箱、套餐、订阅剩余时间、三池用量。账号与状态都会自动保存，下次打开无需重导。</li>
-          <li><b>验证账号</b>：只做检查，不领取（不会碰任何领取接口）。判定 token 是否有效（过期 / 被服务端拒绝会标「失效」），读取 Sand 资格状态、套餐、订阅剩余、三池用量。「Sand 状态」列的「已开通」来自 Cursor 的资格接口，下面小字会写「套餐自带」或「本次领取」。</li>
+          <li><b>验证账号</b>：只做检查，不领取（不会碰任何领取接口）。判定 token 是否有效（过期 / 被服务端拒绝会标「失效」），读取 Sand 资格状态、套餐、订阅剩余、三池用量。账号下方的「已开通bot / 未开通bot」来自 Cursor 的资格接口，悬停可看是套餐自带还是本次领取。</li>
           <li><b>批量操作</b>：验证 / 领取 / 删除 / 保护都<b>只处理勾选</b>的账号，未勾选时按钮不可点。顶部「更多」里还有清空全部。</li>
           <li><b>删除选中</b>：删除勾选的账号；「清空全部」删列表里所有号（需确认个数）。</li>
           <li><b>探测 Refresh / 刷新登录票</b>：从本机 Cursor 或号池整行记录 refresh_token；「刷登录票」向官方 OAuth 换新票，不踢设备。「刷票并踢旧」必须先换票成功，再立刻踢掉本工具原来那条客户端（官方换票会新开一台 Desktop App）；不会踢 Cursor IDE。<b>切号</b>默认先换新票再写入本机 Cursor，这样「本机」会落在最新那台设备上；取消勾选「先刷新登录票」则只切列表里当前这张票。</li>
-          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行「登录信息」菜单里的「显示 Token」。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。</li>
+          <li><b>显示 Token</b>：点「账号列表」标题右侧的按钮，或某一行账号下方的钥匙图标。会分别展示 Worksession（<code>user_id::jwt</code>）和 Refresh，可单独复制。默认关闭。同一排图标还有复制、网页领取、领取和移除，悬停可看说明。</li>
           <li><b>进控制台</b>：用该账号登录态打开隔离浏览器到 Cursor 控制台（dashboard/spending），可直接看用量 / 账单 / 设置。每个账号一个独立浏览器 profile，不影响你日常浏览器的登录。</li>
           <li><b>查看设备</b>：用该号已有的登录票（token）直接调官方接口，<b>不必每次浏览器登录</b>。对应 dashboard Settings → Active Sessions；可勾选后<b>踢掉所选</b>，也可单台踢下线（与官网 Revoke 相同，成功后应立刻从列表消失）。刷登录票新开的 Desktop App 会标<b>刚换票</b>，并排到本机 / 本工具后面、比其它设备靠前（官方接口通常把它放在列表末尾）。若被网站人机校验拦截，点一次<b>「打开 / 显示浏览器」</b>即可：每个账号只开一扇隔离窗口，之后检测和踢下线都复用它，不会每 30 秒再开新窗口。请保持 cursor.com 标签不要关。接口不提供电脑名或 IP。若该号正在本机 Cursor 登录，会用本机 JWT 的签发时间去对客户端创建时间：对上恰好一条就标<b>本机</b>（共号多台客户端时也能认），并记住这台机器的机器码与 sessionId；对不上才退回「一条客户端=本机 / 多条=可能是本机」。切号重置机器码后需重新对上一次。</li>
           <li><b>本机设备保护</b>：账号列表每行点「本机保护」打开<b>本机保护页</b>；<b>一键本机保护在该页里</b>，须先在本机 Cursor 登录该号。保护运行中也是打开该页，<b>停止保护在该页里</b>。开启前<b>勾选要保留的设备</b>，可用「全选保留 / 全不选 / 只留本机」，再点<b>立即删除未勾选</b>马上踢掉其余设备；也可设置<b>检测间隔（秒，默认 30）</b>后启动持续保护。该页里的<b>「检测登录时间」</b>会再弹一层设间隔（默认 120 秒）：把设备创建时间与本机现在比对，落在间隔内的标<b>刚登录</b>，并<b>清空原勾选、只勾这些刚登录设备</b>。<b>一键本机保护</b>用本机 Cursor 登录票的签发时间对上那条客户端，必要时连同本工具自己的会话一起保留，<b>不会再靠刷登录票认设备</b>。刷票会另开一条客户端，旧逻辑会把它当成「本机」把 Cursor 踢掉。对不上唯一一条 Cursor 客户端则不开保护。<b>可同时保护多个账号</b>：表格勾选后点「更多 → 批量保护」，每个号自动保留当前在线设备（有上次勾选则沿用），之后新登录会被踢；「停止选中保护」停勾选的号。顶部「保护中 N 个账号」可打开该页，多号时页里可切换。点「返回列表」或切到别的页只离开本页，<b>不会停止保护</b>。保留名单不能为空；踢掉本工具自己用的那张登录票后，保护最多约 10 分钟失效并自动停止。重启本工具后需要重新点「本机保护」或再批量开启（会回填上次的勾选与间隔）。</li>
@@ -256,7 +260,7 @@
         <ul>
           <li><b>Bot 周用量</b>：Sand（Grok Bot）专属额度，<b>每周重置</b>；来自 GetSandUsageStatus。</li>
           <li><b>Auto 月用量</b> / <b>高级(API) 月用量</b>：账单月内两个独立的池子，来自 usage-summary。三者互不相加；Cursor 自己的「总用量」是两池加权混合值，这里不再当用量显示。</li>
-          <li><b>按量付费</b>：若出现「已扣 $x」，说明该号已开 on-demand 并产生了真实账单。</li>
+          <li><b>超额（按量已扣）</b>：on-demand 真实扣费。进度条按默认上限 <b>$20</b> 计算（接口不给封顶）；数字是已扣金额 / $20，满格即已超过默认超额额度。</li>
         </ul>
       </div>
       </div>
@@ -328,7 +332,7 @@
         <p class="hint">确定把本机 Cursor 切到该账号？会先关掉当前 Cursor，写入登录态后再自动重启。</p>
       </div>
       <div id="switchConfirmOpts">
-        <label class="modal-check"><input type="checkbox" id="switchRefreshFirstChk" checked /> 先刷新登录票再写入本机 Cursor</label>
+        <label class="modal-check"><input type="checkbox" id="switchRefreshFirstChk" /> 先刷新登录票再写入本机 Cursor</label>
         <label class="modal-check"><input type="checkbox" id="switchKickOldChk" checked /> 踢掉刷新前本工具的旧客户端（不会踢 Cursor IDE）</label>
       </div>
       <label class="modal-check" id="loginBotUrlWrap" hidden>
@@ -338,6 +342,46 @@
       <div class="modal-actions">
         <button type="button" class="btn" id="switchConfirmCancel">取消</button>
         <button type="button" class="btn primary" id="switchConfirmOk">确认切号</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask nested" id="guardStartMask" hidden>
+    <div class="modal glass quit" role="dialog" aria-labelledby="guardStartTitle">
+      <h2 id="guardStartTitle">启动保护确认</h2>
+      <p class="hint">请注意甄别并保留你当前机器上的设备，确认后会立即踢掉未选中的设备。</p>
+      <p class="hint danger-note">选择失误会导致 token 失效，无法再登录。</p>
+      <p class="hint" id="guardStartCount"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="guardStartCancel">取消</button>
+        <button type="button" class="btn danger" id="guardStartOk">确认启动</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="tagMask" hidden>
+    <div class="modal glass" role="dialog" aria-labelledby="tagTitle">
+      <h2 id="tagTitle">管理分类</h2>
+      <p class="hint">分类是标签，一个账号可以打多个。付费账户等系统筛选不受影响。</p>
+      <form id="tagAddForm" class="tag-add">
+        <input type="text" id="tagNameInput" maxlength="24" placeholder="新分类名称" autocomplete="off" />
+        <button type="submit" class="btn primary" id="tagAddBtn">新增</button>
+      </form>
+      <p class="hint tag-error" id="tagFormError" hidden></p>
+      <ul id="tagList" class="tag-list"></ul>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="tagClose">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask nested" id="tagPickMask" hidden>
+    <div class="modal glass quit" role="dialog" aria-labelledby="tagPickTitle">
+      <h2 id="tagPickTitle">账号分类</h2>
+      <p class="hint" id="tagPickSub"></p>
+      <div id="tagPickBody"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="tagPickClose">关闭</button>
       </div>
     </div>
   </div>

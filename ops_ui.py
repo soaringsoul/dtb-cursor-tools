@@ -185,7 +185,7 @@ def claim_visible(state):
 
 
 def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
-    """登录信息弹窗：查看 / 危险。换票只在本机保护页。与 web/app.js 保持一致。"""
+    """账号行图标：显示 Token / 复制 / 网页领取 / 领取 / 移除。与 web/app.js 保持一致。"""
     account = account or {}
     has_refresh = bool(account.get("hasRefresh"))
     dis = bool(busy)
@@ -205,11 +205,6 @@ def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
             "label": "复制",
             "title": "复制：邮箱----user_id::token",
             "disabled": dis,
-        },
-        {
-            "act": "dashboard",
-            "label": "进控制台",
-            "title": "用该账号登录态打开隔离浏览器到 Cursor 控制台",
         },
         {
             "act": "browser",

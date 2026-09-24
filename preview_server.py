@@ -17,6 +17,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+import accounts
 import api_key_store
 import login_detect
 import sand_api
@@ -29,6 +30,8 @@ DEMO_ID_2 = "user_01BATCHGUARD2200000000000"
 DEMO_EMAIL_2 = "batchguard2200@outlook.com"
 
 _LOCK = threading.RLock()
+_PREVIEW_SETTINGS = {"hideHelp": True, "autoVerify": True}
+_ACCOUNT_TAGS = {}
 _API_KEYS = []
 _API_KEY_SECRETS = {}
 _LAST_API_KEY_INPUT = ""
@@ -310,6 +313,7 @@ def _rpc(method: str, args):
                 "hasRefresh": True,
                 "refreshRecordedAt": int(time.time()) - 3600,
                 "hasClientId": True,
+                "tagIds": list(_ACCOUNT_TAGS.get(DEMO_ID) or []),
             },
             {
                 "id": DEMO_ID_2,
@@ -319,6 +323,7 @@ def _rpc(method: str, args):
                 "hasRefresh": True,
                 "refreshRecordedAt": int(time.time()) - 1800,
                 "hasClientId": True,
+                "tagIds": list(_ACCOUNT_TAGS.get(DEMO_ID_2) or []),
             },
         ]
     if method == "load_status":
@@ -352,7 +357,27 @@ def _rpc(method: str, args):
             }
         return out
     if method == "get_settings":
-        return {"hideHelp": True, "autoVerify": True}
+        with _LOCK:
+            return dict(_PREVIEW_SETTINGS)
+    if method == "set_settings":
+        data = args[0] if args else {}
+        if isinstance(data, dict):
+            with _LOCK:
+                _PREVIEW_SETTINGS.clear()
+                _PREVIEW_SETTINGS.update(data)
+        return {"ok": True}
+    if method == "set_account_tags":
+        aid = str(args[0] if args else "")
+        raw = args[1] if len(args or []) > 1 else []
+        with _LOCK:
+            catalog = _PREVIEW_SETTINGS.get("tags")
+            known = aid in (DEMO_ID, DEMO_ID_2)
+        clean = accounts.filter_tag_ids(raw, catalog)
+        if not known:
+            return {"ok": False, "tagIds": [], "accounts": _rpc("list_accounts", [])}
+        with _LOCK:
+            _ACCOUNT_TAGS[aid] = clean
+        return {"ok": True, "tagIds": clean, "accounts": _rpc("list_accounts", [])}
     if method == "app_info":
         import ops_ui
         return ops_ui.app_info()
@@ -487,7 +512,7 @@ def _rpc(method: str, args):
                     g["stopReason"] = "user"
                     stopped.append(aid)
         return {"ok": True, "stopped": stopped}
-    if method in ("save_status", "set_settings", "clip_set"):
+    if method in ("save_status", "clip_set"):
         return {"ok": True}
     if method == "clear_accounts":
         return []
@@ -716,7 +741,7 @@ MOCK_JS = r"""
     "local_identity", "list_sessions", "revoke_session", "revoke_sessions", "open_dashboard", "open_sessions_page", "open_login",
     "device_guard_status", "device_guard_start", "device_guard_start_auto", "device_guard_pin_local", "device_guard_stop", "device_guard_stop_all",
     "detect_local_account", "import_files", "import_text", "clear_accounts",
-    "remove_accounts", "claim_one", "verify_one", "status_one", "sand_status_one",
+    "remove_accounts", "set_account_tags", "claim_one", "verify_one", "status_one", "sand_status_one",
     "switch_account", "login_bot", "probe_refresh_one", "refresh_login_one", "refresh_login_kick_old", "list_account_tokens",
     "account_export_text", "export_accounts", "clip_set",
     "list_api_keys", "get_last_api_key_input", "set_last_api_key_input", "import_api_keys", "remove_api_key",

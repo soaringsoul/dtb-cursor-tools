@@ -123,6 +123,8 @@ class _Guard:
         self.kicked_ids: set = set()
         self.last_kicked: list = []
         self.session_count = None
+        self.session_client_count = None
+        self.session_web_count = None
         self.next_revoke_at: dict = {}
         self.auth_failures = 0
 
@@ -141,6 +143,8 @@ class _Guard:
             "kickedCount": len(self.kicked_ids),
             "lastKicked": list(self.last_kicked),
             "sessionCount": self.session_count,
+            "sessionClientCount": self.session_client_count,
+            "sessionWebCount": self.session_web_count,
         }
         if self.interval_seconds is not None:
             out["intervalSeconds"] = int(self.interval_seconds)
@@ -424,7 +428,9 @@ class DeviceGuardManager:
                 return
             guard.auth_failures = 0
             sessions = [row for row in (block.get("sessions") or []) if isinstance(row, dict)]
-            guard.session_count = len(sessions)
+            guard.session_count = int(block.get("sessionCount") if block.get("sessionCount") is not None else len(sessions))
+            guard.session_client_count = int(block.get("sessionClientCount") or 0)
+            guard.session_web_count = int(block.get("sessionWebCount") or 0)
             present = {str(row.get("sessionId") or "") for row in sessions}
             for sid in [s for s in guard.next_revoke_at if s not in present]:
                 del guard.next_revoke_at[sid]
@@ -478,7 +484,9 @@ class DeviceGuardManager:
                 }
                 disappeared = {sid for sid, _row in submitted if sid and sid not in still}
                 with self._lock:
-                    guard.session_count = len(still)
+                    guard.session_count = int(block2.get("sessionCount") if block2.get("sessionCount") is not None else len(still))
+                    guard.session_client_count = int(block2.get("sessionClientCount") or 0)
+                    guard.session_web_count = int(block2.get("sessionWebCount") or 0)
 
         with self._lock:
             now2 = _now()

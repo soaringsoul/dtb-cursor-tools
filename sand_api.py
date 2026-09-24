@@ -17,9 +17,9 @@
       used/limit: 2000/2000,    # 「已含 $20」这一桶（分），总消费≥$20 就恒为满
       breakdown: {included, bonus, total},  # total = 账单月总消费（分），bonus = total - included
   }
-  individualUsage.onDemand = {enabled, used}  # 按量付费（真实扣费，分）
+  individualUsage.onDemand = {enabled, used}  # 按量付费（真实扣费，分）；UI 超额条默认按 $20 封顶
 三个池子必须分开展示：Bot 周用量（GetSandUsageStatus.usagePercent）、Auto、高级(API)；
-totalPercentUsed 是混合值，只能当参考，不能当「用量」显示。
+超额（按量已扣）在 UI 里用第四条进度条，默认上限 $20；totalPercentUsed 是混合值，只能当参考。
 """
 
 import base64

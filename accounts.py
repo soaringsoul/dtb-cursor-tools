@@ -94,6 +94,35 @@ def _extract_from_obj(obj, out: list) -> None:
             _extract_from_obj(item, out)
 
 
+def filter_tag_ids(tag_ids, catalog) -> list:
+    """只保留分类目录里存在的 id，去空、去重，保持原顺序。"""
+    known = set()
+    for item in catalog or []:
+        if isinstance(item, dict) and item.get("id"):
+            known.add(str(item.get("id")))
+    out = []
+    seen = set()
+    for raw in tag_ids or []:
+        tid = str(raw).strip()
+        if not tid or tid not in known or tid in seen:
+            continue
+        seen.add(tid)
+        out.append(tid)
+    return out
+
+
+def _clean_tag_ids(raw) -> list:
+    out = []
+    seen = set()
+    for item in raw or []:
+        tid = str(item).strip()
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        out.append(tid)
+    return out
+
+
 def format_worksession(item: dict) -> str:
     """WorkosCursorSessionToken：user_id::jwt。"""
     raw = (item or {}).get("token") or ""
@@ -215,6 +244,7 @@ class AccountStore:
                 "clientId": it.get("clientId"),
                 "refreshRecordedAt": it.get("refreshRecordedAt"),
                 "refreshSource": it.get("refreshSource"),
+                "tagIds": _clean_tag_ids(it.get("tagIds")),
             }
 
     def _save(self) -> None:
@@ -266,6 +296,7 @@ class AccountStore:
                 for key in ("refreshToken", "clientId", "refreshRecordedAt", "refreshSource"):
                     if existing.get(key):
                         new_item[key] = existing[key]
+                new_item["tagIds"] = _clean_tag_ids(existing.get("tagIds"))
             self._items[user_id] = new_item
         elif existing is not None and label_hint and "@" not in (existing.get("label") or ""):
             existing["label"] = label_hint
@@ -387,6 +418,15 @@ class AccountStore:
             self._save()
             return True
 
+    def set_tag_ids(self, account_id: str, tag_ids) -> bool:
+        with self._lock:
+            item = self._items.get(account_id)
+            if not item:
+                return False
+            item["tagIds"] = _clean_tag_ids(tag_ids)
+            self._save()
+            return True
+
     def set_label(self, account_id: str, label: str) -> None:
         with self._lock:
             item = self._items.get(account_id)
@@ -405,6 +445,7 @@ class AccountStore:
                 "hasRefresh": bool(v.get("refreshToken")),
                 "refreshRecordedAt": v.get("refreshRecordedAt"),
                 "hasClientId": bool(v.get("clientId")),
+                "tagIds": _clean_tag_ids(v.get("tagIds")),
             }
             for v in self._items.values()
         ]

@@ -222,6 +222,7 @@ class TicketMenuGroupsTest(unittest.TestCase):
         self.assertNotIn("refreshLogin", acts)
         self.assertNotIn("refreshLoginKickOld", acts)
         self.assertNotIn("probeRefresh", acts)
+        self.assertNotIn("dashboard", acts)
 
     def test_remove_is_alone_in_danger(self):
         g = ops_ui.ticket_menu_groups({})
@@ -248,6 +249,30 @@ class TicketMenuGroupsTest(unittest.TestCase):
         no_rt = ops_ui.ticket_menu_groups({"hasRefresh": False})["pills"]
         self.assertTrue(any("已有 Refresh" in p for p in has_rt))
         self.assertTrue(any("未探测 Refresh" in p for p in no_rt))
+
+
+class TagFilterUiContractTest(unittest.TestCase):
+    def test_my_categories_controls_exist(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        for needle in (
+            'id="tagFilter"',
+            'id="btnManageTags"',
+            'id="tagMask"',
+            'id="tagPickMask"',
+            'value="paid"',
+        ):
+            self.assertIn(needle, html)
+        js = Path("web/app.js").read_text(encoding="utf-8")
+        self.assertIn('listFilter === "paid"', js)
+        boot = js[js.index("async function boot") :]
+        self.assertIn('setListFilter(settings.listFilter || "paid", false)', boot)
+        self.assertIn("setTagFilter(settings.tagFilter, false)", boot)
+        filt = js[js.index("function setListFilter") : js.index("function setListFilter") + 400]
+        self.assertIn("saveSettings({ listFilter", filt)
+        tag = js[js.index("function setTagFilter") : js.index("function setTagFilter") + 500]
+        self.assertIn("saveSettings({ tagFilter", tag)
+        self.assertIn('tagFilter === "none"', js)
+        self.assertIn('act === "editTags"', js)
 
 
 if __name__ == "__main__":

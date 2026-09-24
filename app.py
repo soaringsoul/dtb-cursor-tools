@@ -27,6 +27,7 @@ import local_cursor
 import grok_bot
 import api_key_store
 from accounts import AccountStore
+from accounts import filter_tag_ids
 from accounts import format_export_line
 import quit_confirm
 import login_detect
@@ -510,6 +511,14 @@ class Api:
         """把查到的真实邮箱回写到账号，刷新/领取后行内显示邮箱。"""
         self._store.set_label(account_id, label)
         return True
+
+    def set_account_tags(self, account_id: str, tag_ids) -> dict:
+        """给账号打自定义分类。只保留 settings.tags 目录里存在的 id。"""
+        settings = self.get_settings()
+        catalog = settings.get("tags") if isinstance(settings, dict) else []
+        clean = filter_tag_ids(tag_ids, catalog)
+        ok = self._store.set_tag_ids(str(account_id or ""), clean)
+        return {"ok": bool(ok), "tagIds": clean if ok else [], "accounts": self._store.list()}
 
     def clear_accounts(self) -> list:
         for account_id in [x.get("id") for x in self._store.list()]:

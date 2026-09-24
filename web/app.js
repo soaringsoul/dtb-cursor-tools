@@ -16,9 +16,11 @@ let accounts = [];
 const rowState = {}; // id -> 行状态：kind + 有效性 + Bot/Auto/高级 三池 + 订阅
 const selected = new Set(); // 勾选的账号 id；为空表示「验证 / 领取」对全部生效
 let busy = false;
-let settings = {}; // settings.json：hideHelp / hideNotice / autoVerify / mainTab / loginDetectSec / importOpen
+let settings = {}; // settings.json：hideHelp / hideNotice / autoVerify / mainTab / loginDetectSec / importOpen / listFilter / tagFilter / tags
 let listQuery = "";
-let listFilter = "all";
+let listFilter = "paid";
+let tagFilter = "all";
+let tagPickId = "";
 let listSort = { key: "added", dir: 1 };
 let helpJobs = [];
 let lastPersisted = {}; // 上次落盘的稳定状态，避免瞬时失败把已保存的数据冲掉
@@ -66,6 +68,22 @@ function fmtUsd(v) {
 function centsToUsd(c) {
   if (c == null || isNaN(c)) return "";
   return fmtUsd(Number(c) / 100);
+}
+
+// 超额（按量已扣）进度条上限，美元。接口不给 on-demand 封顶，UI 默认 $20。
+const ON_DEMAND_CAP_USD = 20;
+
+function onDemandPercent(usedCents, capUsd) {
+  const used = Number(usedCents);
+  const capCents = Number(capUsd == null ? ON_DEMAND_CAP_USD : capUsd) * 100;
+  if (isNaN(used) || !(capCents > 0)) return null;
+  return (used / capCents) * 100;
+}
+
+function onDemandUsedCents(st) {
+  if (!st || st.onDemandUsedCents == null) return null;
+  const n = Number(st.onDemandUsedCents);
+  return isNaN(n) ? null : n;
 }
 
 // 秒 / 毫秒时间戳 / ISO 字符串 -> 毫秒；解析失败 NaN。
@@ -182,6 +200,7 @@ function accountMatches(a) {
   }
   const st = rowState[a.id];
   const guarding = !!(guardStatus[a.id] && guardStatus[a.id].running);
+  if (!accountTagMatches(a)) return false;
   if (listFilter === "local") return !!(localUserId && a.id === localUserId);
   if (listFilter === "guarding") return guarding;
   if (listFilter === "dead") return !!(st && st.alive === false);
@@ -230,11 +249,19 @@ function compareAccounts(a, b, ia, ib) {
   return ra[0] - rb[0] || ra[1] - rb[1] || ia - ib;
 }
 
+function expiryTone(ms) {
+  if (ms <= 24 * 3600000) return "soon";
+  if (ms <= EXPIRING_WINDOW_MS) return "near";
+  return "";
+}
+
 function expiryCell(a, st) {
   const subMs = subEndMs(st);
   if (!isNaN(subMs)) {
     const s = fmtTs(subMs);
     const ms = subMs - Date.now();
+    const tone = expiryTone(ms);
+    const toneCls = tone ? ` ${tone}` : "";
     const willCancel = !!(st && st.pendingCancellationDate);
     const active = st && st.subscriptionStatus === "active";
     let tag;
@@ -244,7 +271,7 @@ function expiryCell(a, st) {
     const yr = st.isYearlyPlan ? "年付" : "月付";
     const tokenExp = (st && st.tokenExp) || (a && a.exp);
     const tokenHint = tokenExp ? `<div class="hint mono">登录至 ${esc(fmtExpiry(tokenExp))}</div>` : "";
-    return `<div class="mono qmain">${esc(s)}</div><div class="hint">${tag} ${esc(relRemain(ms))} · ${yr}</div>${tokenHint}`;
+    return `<div class="mono qmain exp-time${toneCls}">${esc(s)}</div><div class="hint">${tag} <span class="exp-remain${toneCls}">${esc(relRemain(ms))}</span> · ${yr}</div>${tokenHint}`;
   }
   // 还没验证到订阅信息：退回显示 token 登录有效期，并提示验证。
   const s = fmtExpiry(a && a.exp);
@@ -304,37 +331,16 @@ function schedulePersist() {
   }, 400);
 }
 
-// 「已开通」的来源：付费套餐自带（Pro / Pro+ / Ultra 无需领取）还是本次领取到的。
-function sandSourceHint(st) {
-  if (!st || st.kind !== "ok") return "";
-  if (st.claimedNow) return `<div class="hint" title="本次点「领取」后服务端才开通的">本次领取</div>`;
-  if (st.accessGranted && st.planGrantsAccess && tierOf(st) !== "free") {
-    return `<div class="hint" title="get-sand-access-status：资格已授予；Pro / Pro+ / Ultra 套餐自带 Sand，验证只是读到了这个事实，不是领取">套餐自带</div>`;
-  }
-  return "";
-}
-
-function statusCell(st) {
-  if (!st) return `<span class="pill idle">待领取</span>`;
-  switch (st.kind) {
-    case "run":
-      return `<span class="pill run">处理中…</span>`;
-    case "ok":
-      return (
-        `<span class="pill ok" title="验证是只读的、不会领取：显示已开通说明该号本来就有 Sand 资格 / Bot 额度">${esc(st.label || "已开通")}</span>` +
-        sandSourceHint(st)
-      );
-    case "card":
-      return `<span class="pill warn" title="${esc(st.detail || "")}">需绑卡</span>`;
-    case "bad":
-      return `<span class="pill bad" title="${esc(st.detail || "")}">${esc(st.label || "失败")}</span>`;
-    case "dead":
-      return `<span class="pill bad" title="${esc(st.aliveReason || st.detail || "")}">失效</span>`;
-    case "idle":
-      return `<span class="pill idle">${esc(st.label || "未开通")}</span>`;
-    default:
-      return `<span class="pill idle">待领取</span>`;
-  }
+function botOpenPill(st) {
+  const open = !!(st && st.kind === "ok");
+  let title = "尚未开通 Bot";
+  if (open && st.claimedNow) title = "本次领取后开通";
+  else if (open && st.planGrantsAccess) title = "套餐自带 Sand / Bot，验证只是读到这个事实";
+  else if (open) title = "已有 Sand / Bot 资格";
+  else if (st && st.kind === "card") title = st.detail || "需绑卡后才能开通";
+  else if (st && st.kind === "run") title = "正在查询";
+  const cls = open ? "ok" : "idle";
+  return `<span class="pill ${cls} mini" title="${esc(title)}">${open ? "已开通bot" : "未开通bot"}</span>`;
 }
 
 // 有效性：来自「验证账号」（探活 + 过期判断）；领取被服务端接受也视为有效。
@@ -460,6 +466,12 @@ function accountMail(a, id) {
   return (a && (a.label || a.id)) || id;
 }
 
+function acctInitial(mail) {
+  const s = String(mail || "").trim();
+  const ch = s.replace(/^[^A-Za-z0-9\u4e00-\u9fff]+/, "").charAt(0);
+  return (ch || "C").toUpperCase();
+}
+
 function guardPill(a) {
   const g = guardStatus[a.id];
   if (!g || !g.running) return "";
@@ -501,6 +513,28 @@ function sessionPills(a, st) {
 }
 
 // 实时拉到的设备列表回写到行状态，让账号列的设备标签立刻跟上（踢下线后数量会变）。
+function applyGuardSessionCounts(map) {
+  let changed = false;
+  for (const [id, g] of Object.entries(map || {})) {
+    if (!g || g.sessionCount == null || !rowState[id]) continue;
+    const prev = rowState[id];
+    const n = Number(g.sessionCount);
+    const c = g.sessionClientCount == null ? prev.sessionClientCount : Number(g.sessionClientCount);
+    const w = g.sessionWebCount == null ? prev.sessionWebCount : Number(g.sessionWebCount);
+    if (prev.sessionCount === n && prev.sessionClientCount === c && prev.sessionWebCount === w && !prev.sessionError) continue;
+    rowState[id] = {
+      ...prev,
+      sessionCount: n,
+      sessionClientCount: c,
+      sessionWebCount: w,
+      sessionError: "",
+      sessionWaf: false,
+    };
+    changed = true;
+  }
+  if (changed) schedulePersist();
+}
+
 function applySessionBlock(id, res) {
   if (!res || !Object.prototype.hasOwnProperty.call(res, "sessionCount")) return;
   const prev = rowState[id];
@@ -1015,7 +1049,7 @@ function updateGuardGlobal() {
 function guardSignature(map) {
   return JSON.stringify(
     Object.entries(map || {})
-      .map(([k, v]) => [k, !!(v && v.running), (v && v.kickedCount) || 0, v && v.lastError ? 1 : 0])
+      .map(([k, v]) => [k, !!(v && v.running), (v && v.kickedCount) || 0, v && v.sessionCount, v && v.lastError ? 1 : 0])
       .sort()
   );
 }
@@ -1028,6 +1062,7 @@ async function refreshGuardStatus(force) {
     return;
   }
   const changed = guardSignature(next) !== guardSignature(guardStatus);
+  applyGuardSessionCounts(next);
   guardStatus = next;
   updateGuardGlobal();
   if (changed || force) render();
@@ -1680,6 +1715,32 @@ async function startGuard() {
     return;
   }
   const others = present.size - keep.length;
+  const count = $("guardStartCount");
+  if (count) {
+    count.textContent = `当前保留 ${keep.length} 台，确认后会立即踢掉未勾选的 ${others} 台。`;
+  }
+  const mask = $("guardStartMask");
+  if (mask) mask.hidden = false;
+}
+
+function hideGuardStartConfirm() {
+  const mask = $("guardStartMask");
+  if (mask) mask.hidden = true;
+}
+
+async function confirmStartGuard() {
+  hideGuardStartConfirm();
+  const id = guardModal.id;
+  if (!id || guardModal.loading || guardModal.kicking) return;
+  const present = new Set((guardModal.sessions || []).map((s) => s.sessionId));
+  const keep = [...guardModal.checked].filter((sid) => present.has(sid));
+  if (!keep.length) {
+    guardModal.warnEmpty = true;
+    renderGuardModal();
+    toast("至少勾选一台要保留的设备，否则会把所有设备（含本机）全部踢下线");
+    return;
+  }
+  const others = present.size - keep.length;
   const seconds = readGuardIntervalSeconds();
   fillGuardIntervalSeconds(seconds);
   $("guardStart").disabled = true;
@@ -1891,7 +1952,7 @@ async function runGuardBatch(kind) {
 }
 
 // 行操作分组：
-//   右侧操作列 = 账号主操作；账号格「显示 Token」右侧 = 票/浏览器类。
+//   右侧操作列 = 验证 / 切号在最上，其余账号主操作在下；账号格 = 票/浏览器图标。
 //   窄屏隐藏操作列，改为账号格里的「操作」按钮弹出全部动作。
 
 function rowMainActions(a, st) {
@@ -1900,8 +1961,8 @@ function rowMainActions(a, st) {
   const guarding = !!(g && g.running);
   const dis = !!busy;
   return [
-    { act: "verify", label: "验证", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
-    { act: "switch", label: "切号", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
+    { act: "verify", label: "验证", cls: "primary", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
+    { act: "switch", label: "切号", cls: "primary", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
     { act: "loginBot", label: "登录 Bot", title: webTok ? "网站会话：先换客户端票，再写入 Grok Bot 的 Cursor 账户并切换（不关 Cursor）" : "写入 Grok Bot 自带账户列表并切换（不关 Cursor）", disabled: dis },
     { act: "devices", label: "查看设备", title: "实时查看云端登录设备，可踢下线（成功后应立刻从列表消失）" },
     {
@@ -1912,6 +1973,7 @@ function rowMainActions(a, st) {
         ? `打开本机保护页（运行中：已踢 ${(g && g.kickedCount) || 0} 台）。停止保护在该页里操作`
         : "打开本机保护页：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备",
     },
+    { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台" },
   ];
 }
 
@@ -1926,29 +1988,54 @@ function ticketMenuGroups(a, st) {
   const view = [
     {
       act: "showToken",
+      tone: "token",
       label: tokenOn ? "隐藏 Token" : "显示 Token",
-      title: "显示或隐藏 Worksession / Refresh token",
+      title: tokenOn ? "隐藏这一行的 Token" : "显示这一行的 Worksession / Refresh token",
       keepOpen: true,
     },
-    { act: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
-    { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台" },
-    { act: "browser", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
+    { act: "copy", tone: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
+    { act: "browser", tone: "web", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
   ];
   if (claimVisible(st)) {
-    view.push({ act: "claim", label: "领取", title: "领取 Sand 资格", disabled: dis, span: true });
+    view.push({ act: "claim", tone: "claim", label: "领取", title: "领取 Sand 资格", disabled: dis });
   }
   spec.groups.push({ id: "view", title: "查看", items: view });
   spec.groups.push({
     id: "danger",
     title: "",
     kind: "danger",
-    items: [{ act: "remove", label: "移除这个账号", cls: "danger", disabled: dis, span: true }],
+    items: [{ act: "remove", tone: "bad", label: "移除这个账号", title: "从本机列表移除这个账号", cls: "danger", disabled: dis }],
   });
   return spec;
 }
 
-function ticketMenuHtml(a) {
-  return `<button type="button" class="btn tiny" data-act="ticketMenu" data-id="${esc(a.id)}" title="Token / 领取 / 进控制台。换票在本机保护页">登录信息 ▾</button>`;
+const TICKET_ICONS = {
+  showToken:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="3.2"/><path d="M11 13.2 20 4.2M16.5 7.5l2 2M18.2 5.2l2 2"/></svg>',
+  copy:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>',
+  browser:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16"/></svg>',
+  claim:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="9" rx="1.5"/><path d="M4 14h16M12 10v9"/><path d="M12 10c-1.2-2.4-4.6-2.2-4.6.2 0 1.4 1.8 1.6 4.6-.2 2.8 1.8 4.6 1.6 4.6-.2 0-2.4-3.4-2.6-4.6-.2z"/></svg>',
+  remove:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V5h6v2M8 7l.8 12h6.4L16 7"/></svg>',
+};
+
+function ticketMenuHtml(a, st) {
+  const items = ticketMenuGroups(a, st).groups.flatMap((g) => g.items);
+  const buttons = items
+    .map((b) => {
+      const on = b.act === "showToken" && rowTokensOn(a.id) ? " on" : "";
+      return (
+        `<button type="button" class="ico ${esc(b.tone || "")}${on}" data-act="${esc(b.act)}" data-id="${esc(a.id)}"` +
+        `${b.disabled ? " disabled" : ""}` +
+        ` title="${esc(b.title || b.label)}" aria-label="${esc(b.label)}">` +
+        `${TICKET_ICONS[b.act] || ""}</button>`
+      );
+    })
+    .join("");
+  return `<div class="ico-row">${buttons}</div>`;
 }
 
 function actionButtonsHtml(id, list, opts) {
@@ -2007,8 +2094,10 @@ function openRowMenu(id) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
   menuKind = "row";
-  const spec = ticketMenuGroups(a, rowState[id]);
-  spec.groups = [{ id: "account", title: "账号", items: rowMainActions(a, rowState[id]) }].concat(spec.groups);
+  const spec = {
+    pills: [],
+    groups: [{ id: "account", title: "账号", items: rowMainActions(a, rowState[id]) }],
+  };
   fillActionSheet(id, accountMail(a, id), a.id, spec);
 }
 
@@ -2033,18 +2122,27 @@ async function onMenuClick(e) {
   }
 }
 
-// 一个池子一行：标签 + 百分比 + 细条。三池互不相加。
-function poolRow(cls, key, pct, extra) {
+// 标签 + 彩色百分比 + 细条 + 右侧明细。四条互不相加。
+function poolRow(cls, key, pct, right) {
   if (pct == null || isNaN(pct)) {
     return `<div class="pool ${cls}"><span class="pool-k">${key}</span><div class="pool-v"><span class="hint">—</span></div></div>`;
   }
   const v = Math.min(100, Math.max(0, Number(pct)));
   const full = v >= 100 ? "full" : "";
+  const tick = cls === "ondemand" && v > 0 && v < 100 ? " tick" : "";
+  const detail = right != null && right !== "" ? right : "";
   return (
     `<div class="pool ${cls}"><span class="pool-k">${key}</span><div class="pool-v">` +
-    `<span class="mono">${esc(fmtPercent(pct))}</span><div class="bar"><i class="${full}" style="width:${v}%"></i></div>${extra || ""}` +
+    `<span class="pool-pct">${esc(fmtPercent(pct))}</span>` +
+    `<div class="bar"><i class="${full}${tick}" style="width:${v}%"></i></div>` +
+    `<span class="mono">${esc(detail)}</span>` +
     `</div></div>`
   );
+}
+
+function pctCapLabel(pct) {
+  if (pct == null || isNaN(pct)) return "";
+  return `${fmtPercent(pct)} / 100%`;
 }
 
 function tokenCell(a) {
@@ -2065,7 +2163,7 @@ function tokenCell(a) {
     ? `<button type="button" class="btn tiny" data-act="copyToken" data-id="${esc(a.id)}" data-kind="refresh" title="复制 refresh_token">复制</button>`
     : "";
   return (
-    `<tr class="token-detail" data-id="${esc(a.id)}"><td colspan="7">` +
+    `<tr class="token-detail" data-id="${esc(a.id)}"><td colspan="6">` +
     `<div class="token-box">` +
     `<div class="token-row"><span class="token-k">Worksession</span>${wsBody}${wsCopy}</div>` +
     `<div class="token-row"><span class="token-k">Refresh</span>${rtBody}${rtCopy}</div>` +
@@ -2131,6 +2229,8 @@ async function toggleRowToken(id) {
 
 function quotaCell(st) {
   if (!st || st.kind === "dead") return `<span class="hint">—</span>`;
+  const odUsed = onDemandUsedCents(st);
+  const odCents = odUsed == null ? 0 : odUsed;
   const hasAny = st.percent != null || st.autoPercent != null || st.apiPercent != null;
   if (!hasAny) return `<span class="hint">— 点「验证账号」获取</span>`;
   // 混合值 / 月总消费只进 tooltip：它们是汇总口径，不能当「用量」看。
@@ -2139,21 +2239,29 @@ function quotaCell(st) {
   if (st.cycleTotalCents != null) tips.push(`账单月总消费 ${centsToUsd(st.cycleTotalCents)}（含 Bot 与全部模型）`);
   if (st.includedLimitCents != null) tips.push(`已含额度 ${centsToUsd(st.includedUsedCents)} / ${centsToUsd(st.includedLimitCents)}`);
   if (st.hasAvailableUsage === false) tips.push("Bot 本周额度已用尽");
+  tips.push(`超额（按量已扣）${centsToUsd(odCents)} / 上限 $${ON_DEMAND_CAP_USD}（默认，接口不给封顶）`);
   let html = `<div class="pools" title="${esc(tips.join("\n"))}">`;
-  const fresh = isJustReset(st.periodStart) ? `<span class="tag-reset">刚重置</span>` : "";
-  html += poolRow("bot", "Bot 周", st.percent, fresh);
-  html += poolRow("auto", "Auto 月", st.autoPercent);
-  html += poolRow("api", "高级 月", st.apiPercent);
-  html += `</div>`;
   const resetMs = toMs(st.nextReset);
+  let botRight = "";
+  let botTitle = "";
   if (st.percent != null && !isNaN(resetMs)) {
     const rel = fmtResetRelative(st.nextReset);
-    const est = st.nextResetEstimated ? " · 推算" : "";
-    html += `<div class="pool-sub" title="Bot 周额度下次重置：${esc(fmtTs(resetMs))}${st.nextResetEstimated ? "（接口未回重置时间，按周期起点 + 7 天推算）" : ""}">Bot 重置 ${esc(fmtTsShort(resetMs))}${rel ? " · " + esc(rel) : ""}${est}</div>`;
+    const est = st.nextResetEstimated ? "，按周期起点 + 7 天推算" : "";
+    botRight = `重置 ${fmtTsShort(resetMs)}`;
+    botTitle = `Bot 周额度下次重置：${fmtTs(resetMs)}${rel ? "（" + rel + "）" : ""}${est}`;
   }
-  if (st.onDemandUsedCents != null && Number(st.onDemandUsedCents) > 0) {
-    html += `<div class="pool-sub"><span class="pill warn mini" title="按量付费（on-demand）已开且产生了真实扣费">按量已扣 ${esc(centsToUsd(st.onDemandUsedCents))}</span></div>`;
-  }
+  html += poolRow("bot", "Bot 周", st.percent, botRight).replace(
+    'class="pool bot"',
+    `class="pool bot"${botTitle ? ` title="${esc(botTitle)}"` : ""}`
+  );
+  html += poolRow("auto", "Auto 月", st.autoPercent, pctCapLabel(st.autoPercent));
+  const apiRight = st.includedLimitCents != null
+    ? `${centsToUsd(st.includedUsedCents)} / ${centsToUsd(st.includedLimitCents)}`
+    : pctCapLabel(st.apiPercent);
+  html += poolRow("api", "高级 月", st.apiPercent, apiRight);
+  const odPct = onDemandPercent(odCents, ON_DEMAND_CAP_USD);
+  html += poolRow("ondemand", "超额", odPct, `${centsToUsd(odCents)} / $${ON_DEMAND_CAP_USD}`);
+  html += `</div>`;
   if (st.spendUsd != null) html += `<div class="pool-sub">团队账单月消费 ${esc(fmtUsd(st.spendUsd))}</div>`;
   return html;
 }
@@ -2218,21 +2326,20 @@ function render() {
       const addedAt = a.addedAt ? fmtTs(toMs(a.addedAt)) : "";
       const checkedAt = st && st.checkedAt ? fmtTs(toMs(st.checkedAt)) : "";
       const meta =
-        `<div class="meta">${validityPill(st)}${tokTag}${refreshTag}${sessionPills(a, st)}` +
+        `<div class="meta">${validityPill(st)}${botOpenPill(st)}${tokTag}${refreshTag}${sessionPills(a, st)}` +
         `<span title="导入时间">导入 ${esc(addedAt || "—")}</span>` +
         (checkedAt ? `<span title="上次验证时间">验证 ${esc(checkedAt)}</span>` : "") +
-        `</div>`;
+        `</div>${accountTagsHtml(a, st)}`;
       const dead = st && st.alive === false;
       const dis = busy ? " disabled" : "";
       const guarding = !!(guardStatus[a.id] && guardStatus[a.id].running);
       const rowCls = [dead ? "dead" : "", guarding ? "guarding" : ""].filter(Boolean).join(" ");
       return `<tr data-id="${esc(a.id)}"${rowCls ? ` class="${rowCls}"` : ""}>
         <td class="col-chk"><input type="checkbox" class="rowchk" data-id="${esc(a.id)}"${checked}${dis} /></td>
-        <td><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}${ticketMenuHtml(a)}
-          <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></td>
+        <td><div class="acct"><span class="avatar" aria-hidden="true">${esc(acctInitial(mail))}</span><div class="acct-main"><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}
+          <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></div></div></td>
         <td>${planCell(st)}</td>
         <td>${expiryCell(a, st)}</td>
-        <td>${statusCell(st)}</td>
         <td class="col-quota">${quotaCell(st)}</td>
         <td class="col-act"><div class="act-wrap">
           ${actionButtonsHtml(a.id, rowMainActions(a, st))}
@@ -2719,7 +2826,7 @@ function openSwitchConfirm(id) {
   pendingSwitchKind = "switch";
   const refreshChk = $("switchRefreshFirstChk");
   const kickChk = $("switchKickOldChk");
-  if (refreshChk) refreshChk.checked = true;
+  if (refreshChk) refreshChk.checked = false;
   if (kickChk) kickChk.checked = true;
   syncSwitchKickOldEnabled();
   paintSwitchConfirmBody();
@@ -3159,7 +3266,8 @@ function annotationFor(a, st) {
     if (st.percent != null) parts.push(`Bot ${fmtPercent(st.percent)}${usedBotQuota(st) ? "（已用）" : ""}`);
     if (st.autoPercent != null) parts.push(`Auto ${fmtPercent(st.autoPercent)}${full(st.autoPercent)}`);
     if (st.apiPercent != null) parts.push(`高级 ${fmtPercent(st.apiPercent)}${full(st.apiPercent)}`);
-    if (st.onDemandUsedCents != null && Number(st.onDemandUsedCents) > 0) parts.push(`按量已扣 ${centsToUsd(st.onDemandUsedCents)}`);
+    const odUsed = onDemandUsedCents(st);
+    if (odUsed != null && odUsed > 0) parts.push(`超额 ${centsToUsd(odUsed)} / $${ON_DEMAND_CAP_USD}`);
     if (st.alive === false) parts.push(`失效：${st.aliveReason || ""}`);
   }
   if (a.addedAt) parts.push(`导入 ${fmtTs(toMs(a.addedAt))}`);
@@ -3281,6 +3389,8 @@ function dispatchAction(act, id, btn) {
   }
   if (busy) return;
   if (act === "remove") {
+    const who = accountMail(accounts.find((x) => x.id === id), id);
+    if (!window.confirm(`确定移除 ${who}？只从本机列表拿掉。`)) return;
     api()
       .remove_account(id)
       .then((list) => {
@@ -3312,6 +3422,8 @@ function dispatchAction(act, id, btn) {
     refreshLoginKickOld(id);
   } else if (act === "pinLocal") {
     pinLocalGuard(id);
+  } else if (act === "editTags") {
+    openTagPicker(id);
   }
 }
 
@@ -3695,8 +3807,220 @@ function onSortHeaderClick(e) {
   render();
 }
 
-function setListFilter(filt) {
+function tagCatalog() {
+  return (Array.isArray(settings.tags) ? settings.tags : []).filter((t) => t && t.id && String(t.name || "").trim());
+}
+
+function tagIdsOf(a) {
+  return Array.isArray(a && a.tagIds) ? a.tagIds.map((id) => String(id)) : [];
+}
+
+function tagName(id) {
+  const hit = tagCatalog().find((t) => t.id === id);
+  return hit ? String(hit.name) : "";
+}
+
+function accountTagMatches(a) {
+  if (!tagFilter || tagFilter === "all") return true;
+  const ids = tagIdsOf(a).filter((id) => tagName(id));
+  if (tagFilter === "none") return ids.length === 0;
+  return ids.includes(tagFilter);
+}
+
+function normalizeTagFilter(filt) {
+  const f = filt || "all";
+  if (f === "all" || f === "none") return f;
+  return tagCatalog().some((t) => t.id === f) ? f : "all";
+}
+
+function setListFilter(filt, persist) {
   listFilter = filt || "all";
+  if (persist !== false && settings.listFilter !== listFilter) saveSettings({ listFilter });
+  render();
+}
+
+function setTagFilter(filt, persist) {
+  tagFilter = normalizeTagFilter(filt);
+  if (persist !== false && settings.tagFilter !== tagFilter) saveSettings({ tagFilter });
+  paintTagFilter();
+  render();
+}
+
+function paintTagFilter() {
+  const sel = $("tagFilter");
+  if (!sel) return;
+  const opts =
+    `<option value="all">我的分类 · 全部</option>` +
+    `<option value="none">未分类</option>` +
+    tagCatalog()
+      .map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`)
+      .join("");
+  sel.innerHTML = opts;
+  if ([...sel.options].some((o) => o.value === tagFilter)) sel.value = tagFilter;
+}
+
+function accountTagsHtml(a, st) {
+  const pills = tagIdsOf(a)
+    .map((id) => {
+      const name = tagName(id);
+      return name ? `<span class="pill info mini">${esc(name)}</span>` : "";
+    })
+    .join("");
+  return (
+    `<div class="tag-line">${pills}` +
+    `<button type="button" class="btn tiny" data-act="editTags" data-id="${esc(a.id)}" title="给这个账号打分类标签">分类</button>` +
+    ticketMenuHtml(a, st) +
+    `</div>`
+  );
+}
+
+function newTagId() {
+  return "tag_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function tagNameTaken(name, exceptId) {
+  const n = String(name || "").trim();
+  return tagCatalog().some((t) => t.name === n && t.id !== exceptId);
+}
+
+function showTagError(msg) {
+  const el = $("tagFormError");
+  if (!el) return;
+  el.hidden = !msg;
+  el.textContent = msg || "";
+}
+
+function paintTagManager() {
+  const list = $("tagList");
+  if (!list) return;
+  const tags = tagCatalog();
+  list.innerHTML = tags.length
+    ? tags
+        .map(
+          (t) =>
+            `<li class="tag-row" data-id="${esc(t.id)}">` +
+            `<input type="text" class="tag-rename" value="${esc(t.name)}" maxlength="24" />` +
+            `<button type="button" class="btn tiny" data-tag-act="rename" data-id="${esc(t.id)}">改名</button>` +
+            `<button type="button" class="btn tiny danger" data-tag-act="delete" data-id="${esc(t.id)}">删除</button>` +
+            `</li>`
+        )
+        .join("")
+    : `<li class="hint">还没有自定义分类</li>`;
+}
+
+function openTagManager() {
+  showTagError("");
+  paintTagManager();
+  const mask = $("tagMask");
+  if (mask) mask.hidden = false;
+  const input = $("tagNameInput");
+  if (input) input.focus();
+}
+
+function hideTagManager() {
+  const mask = $("tagMask");
+  if (mask) mask.hidden = true;
+}
+
+async function addTag(name) {
+  const n = String(name || "").trim();
+  if (!n) return "请填写分类名称";
+  if (tagNameTaken(n)) return "已有同名分类";
+  await saveSettings({ tags: tagCatalog().concat([{ id: newTagId(), name: n }]) });
+  paintTagFilter();
+  paintTagManager();
+  return "";
+}
+
+async function renameTag(id, name) {
+  const n = String(name || "").trim();
+  if (!n) return "请填写分类名称";
+  if (tagNameTaken(n, id)) return "已有同名分类";
+  await saveSettings({ tags: tagCatalog().map((t) => (t.id === id ? { id: t.id, name: n } : { id: t.id, name: t.name })) });
+  paintTagFilter();
+  render();
+  paintTagManager();
+  return "";
+}
+
+async function deleteTag(id) {
+  const name = tagName(id) || "这个分类";
+  if (!window.confirm(`删除「${name}」？账号上的该标签会一起去掉。`)) return;
+  for (const a of accounts.slice()) {
+    const ids = tagIdsOf(a);
+    if (!ids.includes(id)) continue;
+    await writeAccountTags(a.id, ids.filter((x) => x !== id));
+  }
+  await saveSettings({ tags: tagCatalog().filter((t) => t.id !== id) });
+  if (tagFilter === id) setTagFilter("all");
+  else {
+    paintTagFilter();
+    render();
+  }
+  paintTagManager();
+  if (tagPickId) paintTagPicker();
+}
+
+async function writeAccountTags(accountId, tagIds) {
+  const clean = tagIds.filter((id) => tagName(id));
+  const bridge = api();
+  if (!bridge || !bridge.set_account_tags) {
+    const a = accounts.find((x) => x.id === accountId);
+    if (a) a.tagIds = clean;
+    return;
+  }
+  const res = await bridge.set_account_tags(accountId, clean);
+  if (res && Array.isArray(res.accounts)) accounts = res.accounts;
+  else {
+    const a = accounts.find((x) => x.id === accountId);
+    if (a) a.tagIds = (res && res.tagIds) || clean;
+  }
+}
+
+function openTagPicker(id) {
+  tagPickId = id || "";
+  paintTagPicker();
+  const mask = $("tagPickMask");
+  if (mask) mask.hidden = false;
+}
+
+function hideTagPicker() {
+  tagPickId = "";
+  const mask = $("tagPickMask");
+  if (mask) mask.hidden = true;
+}
+
+function paintTagPicker() {
+  const a = accounts.find((x) => x.id === tagPickId);
+  const sub = $("tagPickSub");
+  const body = $("tagPickBody");
+  if (!body) return;
+  if (!a) {
+    body.innerHTML = "";
+    return;
+  }
+  if (sub) sub.textContent = accountMail(a, a.id);
+  const owned = new Set(tagIdsOf(a));
+  const tags = tagCatalog();
+  body.innerHTML = tags.length
+    ? tags
+        .map(
+          (t) =>
+            `<label class="modal-check"><input type="checkbox" data-tag-id="${esc(t.id)}"${owned.has(t.id) ? " checked" : ""} /> ${esc(t.name)}</label>`
+        )
+        .join("")
+    : `<p class="hint">还没有分类。先点「管理分类」新增。</p>`;
+}
+
+async function onTagPickChange(e) {
+  const box = e.target.closest("input[data-tag-id]");
+  if (!box || !tagPickId) return;
+  const id = box.getAttribute("data-tag-id");
+  const a = accounts.find((x) => x.id === tagPickId);
+  if (!a || !id) return;
+  const ids = tagIdsOf(a).filter((x) => x !== id);
+  if (box.checked) ids.push(id);
+  await writeAccountTags(tagPickId, ids);
   render();
 }
 
@@ -3777,6 +4101,55 @@ async function boot() {
   if (acctFilter) {
     acctFilter.addEventListener("change", () => {
       setListFilter(acctFilter.value || "all");
+    });
+  }
+  const tagFilterSel = $("tagFilter");
+  if (tagFilterSel) {
+    tagFilterSel.addEventListener("change", () => {
+      setTagFilter(tagFilterSel.value || "all");
+    });
+  }
+  const btnManageTags = $("btnManageTags");
+  if (btnManageTags) btnManageTags.addEventListener("click", openTagManager);
+  const tagAddForm = $("tagAddForm");
+  if (tagAddForm) {
+    tagAddForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = $("tagNameInput");
+      const err = await addTag(input ? input.value : "");
+      showTagError(err);
+      if (!err && input) input.value = "";
+    });
+  }
+  const tagList = $("tagList");
+  if (tagList) {
+    tagList.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-tag-act]");
+      if (!btn) return;
+      const id = btn.getAttribute("data-id");
+      const act = btn.getAttribute("data-tag-act");
+      const row = btn.closest(".tag-row");
+      const input = row ? row.querySelector(".tag-rename") : null;
+      if (act === "rename") showTagError(await renameTag(id, input ? input.value : ""));
+      else if (act === "delete") await deleteTag(id);
+    });
+  }
+  const tagClose = $("tagClose");
+  if (tagClose) tagClose.addEventListener("click", hideTagManager);
+  const tagMask = $("tagMask");
+  if (tagMask) {
+    tagMask.addEventListener("click", (e) => {
+      if (e.target === tagMask) hideTagManager();
+    });
+  }
+  const tagPickBody = $("tagPickBody");
+  if (tagPickBody) tagPickBody.addEventListener("change", onTagPickChange);
+  const tagPickClose = $("tagPickClose");
+  if (tagPickClose) tagPickClose.addEventListener("click", hideTagPicker);
+  const tagPickMask = $("tagPickMask");
+  if (tagPickMask) {
+    tagPickMask.addEventListener("click", (e) => {
+      if (e.target === tagPickMask) hideTagPicker();
     });
   }
   const heroStats = document.querySelector(".hero-stats");
@@ -3873,6 +4246,18 @@ async function boot() {
       hideSwitchConfirm();
       return;
     }
+    if ($("guardStartMask") && !$("guardStartMask").hidden) {
+      hideGuardStartConfirm();
+      return;
+    }
+    if ($("tagPickMask") && !$("tagPickMask").hidden) {
+      hideTagPicker();
+      return;
+    }
+    if ($("tagMask") && !$("tagMask").hidden) {
+      hideTagManager();
+      return;
+    }
     if (isGuardPanelOpen()) hideGuard();
   });
   $("guardRefresh").addEventListener("click", () => loadGuardSessions());
@@ -3886,6 +4271,11 @@ async function boot() {
   $("guardBrowser").addEventListener("click", () => openSessionsPage(guardModal.id));
   $("guardBody").addEventListener("click", onGuardBodyClick);
   $("guardStart").addEventListener("click", startGuard);
+  $("guardStartCancel").addEventListener("click", hideGuardStartConfirm);
+  $("guardStartOk").addEventListener("click", confirmStartGuard);
+  $("guardStartMask").addEventListener("click", (e) => {
+    if (e.target === $("guardStartMask")) hideGuardStartConfirm();
+  });
   $("guardStop").addEventListener("click", () => guardModal.id && stopGuard(guardModal.id));
   const guardPin = $("guardPinLocal");
   if (guardPin) {
@@ -3945,6 +4335,8 @@ async function boot() {
   } catch (e) {
     settings = {};
   }
+  setListFilter(settings.listFilter || "paid", false);
+  setTagFilter(settings.tagFilter, false);
   $("autoVerifyChk").checked = settings.autoVerify !== false;
   setImportPanelOpen(!!settings.importOpen, false);
   setMainTab("accounts", false);

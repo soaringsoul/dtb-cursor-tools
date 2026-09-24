@@ -288,17 +288,35 @@ class LoginBotUiContractTest(unittest.TestCase):
         end = self.js.index(f"function {next_name}")
         return self.js[start:end]
 
-    def test_row_main_button_sits_beside_switch(self):
+    def test_verify_and_switch_lead_row_actions(self):
         chunk = self._fn("rowMainActions", "ticketMenuGroups")
-        self.assertIn('label: "切号"', chunk)
-        self.assertIn('label: "登录 Bot"', chunk)
-        self.assertIn('act: "loginBot"', chunk)
-        self.assertLess(chunk.index("切号"), chunk.index("登录 Bot"))
+        verify_at = chunk.index('label: "验证"')
+        switch_at = chunk.index('label: "切号"')
+        login_at = chunk.index('label: "登录 Bot"')
+        self.assertLess(verify_at, switch_at)
+        self.assertLess(switch_at, login_at)
+        icons = self._fn("ticketMenuHtml", "actionButtonsHtml")
+        self.assertNotIn('label: "验证"', icons)
+        self.assertNotIn('label: "切号"', icons)
 
     def test_ticket_menu_does_not_include_login_bot(self):
         chunk = self._fn("ticketMenuGroups", "ticketMenuHtml")
         self.assertNotIn("登录 Bot", chunk)
         self.assertNotIn("loginBot", chunk)
+        self.assertNotIn("进控制台", chunk)
+        self.assertNotIn("dashboard", chunk)
+
+    def test_ticket_actions_are_inline_icons(self):
+        chunk = self._fn("ticketMenuHtml", "actionButtonsHtml")
+        self.assertIn('class="ico-row"', chunk)
+        self.assertIn("TICKET_ICONS", chunk)
+        self.assertNotIn("登录信息", chunk)
+        self.assertNotIn('data-act="ticketMenu"', chunk)
+
+    def test_dashboard_sits_right_of_guard(self):
+        chunk = self._fn("rowMainActions", "ticketMenuGroups")
+        self.assertLess(chunk.index('label: "本机保护"'), chunk.index('label: "进控制台"'))
+        self.assertIn('act: "dashboard"', chunk)
 
     def test_js_calls_login_bot_api_not_open_login(self):
         self.assertIn("api().login_bot", self.js)
@@ -341,6 +359,14 @@ class LoginBotUiContractTest(unittest.TestCase):
     def test_html_switch_opts_wrapped_for_login_bot_hide(self):
         self.assertIn('id="switchConfirmOpts"', self.html)
         self.assertIn("switchRefreshFirstChk", self.html)
+
+    def test_switch_confirm_leaves_refresh_unchecked(self):
+        start = self.html.index('id="switchRefreshFirstChk"')
+        tag = self.html[start:start + 80]
+        self.assertNotIn("checked", tag)
+        chunk = self._fn("openSwitchConfirm", "openLoginBotConfirm")
+        self.assertIn("refreshChk.checked = false", chunk)
+        self.assertNotIn("refreshChk.checked = true", chunk)
 
 
 class PreviewLoginBotRpcTest(unittest.TestCase):
