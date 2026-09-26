@@ -6,6 +6,8 @@ from pathlib import Path
 import ops_ui
 import sand_patch
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 NOW = 1_700_000_000_000  # ms
 
@@ -103,14 +105,29 @@ class MatchFilterSortTest(unittest.TestCase):
         self.assertFalse(ops_ui.account_matches(pro, filt="free"))
         self.assertFalse(ops_ui.account_matches(unknown, filt="free"))
 
-    def test_default_sort_is_newest_added_first(self):
+    def test_default_sort_is_expiry_ascending(self):
+        later = row("later", state={"billingCycleEndMs": NOW + 9 * 86400000})
+        sooner = row("sooner", state={"billingCycleEndMs": NOW + 2 * 86400000})
+        ordered = ops_ui.sort_rows([later, sooner], now_ms=NOW)
+        self.assertEqual([r["id"] for r in ordered], ["sooner", "later"])
+
+    def test_time_sort_descending_puts_latest_expiry_first(self):
+        later = row("later", state={"billingCycleEndMs": NOW + 9 * 86400000})
+        sooner = row("sooner", state={"billingCycleEndMs": NOW + 2 * 86400000})
+        missing = row("missing")
+        ordered = ops_ui.sort_rows(
+            [sooner, missing, later], sort_by="remain", descending=True, now_ms=NOW
+        )
+        self.assertEqual([r["id"] for r in ordered], ["later", "sooner", "missing"])
+
+    def test_added_sort_is_newest_first(self):
         old = row("old")
         old["account"]["addedAt"] = 100
         mid = row("mid")
         mid["account"]["addedAt"] = 200
         new = row("new")
         new["account"]["addedAt"] = 300
-        ordered = ops_ui.sort_rows([old, mid, new], now_ms=NOW)
+        ordered = ops_ui.sort_rows([old, mid, new], sort_by="added", now_ms=NOW)
         self.assertEqual([r["id"] for r in ordered], ["new", "mid", "old"])
 
     def test_logged_in_account_stays_above_newer_adds(self):
@@ -120,16 +137,18 @@ class MatchFilterSortTest(unittest.TestCase):
         current["account"]["addedAt"] = 150
         new = row("new")
         new["account"]["addedAt"] = 300
-        ordered = ops_ui.sort_rows([old, current, new], now_ms=NOW, local_user_id="me")
+        ordered = ops_ui.sort_rows(
+            [old, current, new], sort_by="added", now_ms=NOW, local_user_id="me"
+        )
         self.assertEqual([r["id"] for r in ordered], ["me", "new", "old"])
 
-    def test_logged_in_stays_on_top_when_sorting_by_remain(self):
+    def test_time_sort_ignores_local_pin(self):
         soon = row("soon", state={"billingCycleEndMs": NOW + 86400000})
         local = row("me", state={"billingCycleEndMs": NOW + 9 * 86400000})
         ordered = ops_ui.sort_rows(
-            [soon, local], sort_by="remain", now_ms=NOW, local_user_id="me"
+            [local, soon], sort_by="remain", now_ms=NOW, local_user_id="me"
         )
-        self.assertEqual([r["id"] for r in ordered], ["me", "soon"])
+        self.assertEqual([r["id"] for r in ordered], ["soon", "me"])
 
     def test_sort_remain_puts_soonest_first(self):
         a = row("a", state={"billingCycleEndMs": NOW + 9 * 86400000})
@@ -155,7 +174,7 @@ class ClaimVisibleTest(unittest.TestCase):
 
 class HtmlContractTest(unittest.TestCase):
     def test_ops_launch_controls_exist(self):
-        html = Path("web/index.html").read_text(encoding="utf-8")
+        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         for needle in (
             'id="appVersion"',
             'id="btnHideNotice"',
@@ -183,35 +202,72 @@ class HtmlContractTest(unittest.TestCase):
             'id="guardDiff"',
             'id="toolbarMore"',
             'id="btnClear"',
+            'id="btnSortTime"',
         ):
             self.assertIn(needle, html)
+        self.assertNotIn("<th>套餐</th>", html)
         import_block = html.split('id="importCard"', 1)[1].split('id="accountsCard"', 1)[0]
         self.assertNotIn('id="btnClear"', import_block)
         self.assertIn("本机号池工作台", html)
-        js = Path("web/app.js").read_text(encoding="utf-8")
-        self.assertIn('listSort = { key: "added", dir: 1 }', js)
+        js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+        self.assertIn('listSort = { key: "remain", dir: 1 }', js)
+        self.assertIn("function toggleTimeSort()", js)
+        self.assertIn('class="mail-line"', js)
+        self.assertIn('colspan="5"', js)
+        self.assertNotIn("${planCell(st)}", js)
         self.assertIn('listFilter === "paid"', js)
         self.assertIn('listFilter === "free"', js)
         self.assertIn("localUserId && x.a.id === localUserId", js)
 
     def test_ticket_sheet_is_grouped_not_flat_grid(self):
-        html = Path("web/index.html").read_text(encoding="utf-8")
+        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         self.assertIn('id="menuMeta"', html)
         self.assertIn('class="modal glass sheet"', html)
         self.assertNotIn('class="menu-grid" id="menuBody"', html)
         self.assertIn('id="menuBody"', html)
-        css = Path("web/style.css").read_text(encoding="utf-8")
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
         self.assertIn(".menu-sheet", css)
         self.assertIn(".menu-group", css)
 
     def test_antd_primary_uses_brand_orange(self):
-        css = Path("web/style.css").read_text(encoding="utf-8")
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
         self.assertIn("--brand: #fa8c16", css)
         primary = css.split(".btn.primary {", 1)[1].split("}", 1)[0]
         self.assertIn("var(--brand)", primary)
         self.assertNotIn("brand-action", primary)
         self.assertIn(".tab-bar", css)
         self.assertIn("var(--layout-bg)", css.split(".tab-bar {", 1)[1].split("}", 1)[0])
+
+    def test_tags_use_antd_four_px_radius_not_pill(self):
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
+        self.assertIn("--radius-tag: 4px", css)
+        pill = css.split("\n.pill {", 1)[1].split("}", 1)[0]
+        self.assertIn("var(--radius-tag)", pill)
+        self.assertNotIn("999px", pill)
+        # 头像与状态圆点仍是全圆
+        self.assertIn("border-radius: 50%", css.split(".avatar {", 1)[1].split("}", 1)[0])
+        self.assertIn("border-radius: 50%", css.split(".pill.guard .dot {", 1)[1].split("}", 1)[0])
+
+    def test_only_one_solid_primary_per_account_row(self):
+        js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+        main_actions = js.split("function rowMainActions(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn('cls: "primary"', main_actions)
+
+    def test_inline_controls_match_antd_small_control_size(self):
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
+        self.assertNotIn("font-weight: 650", css)
+        ico = css.split("\n.ico {", 1)[1].split("}", 1)[0]
+        self.assertIn("height: var(--control-h-sm)", ico)
+        self.assertIn("border-radius: var(--radius-sm)", ico)
+        self.assertNotIn("30px", css.split(".ico-row .btn.tiny {", 1)[1].split("}", 1)[0])
+
+    def test_active_tab_uses_brand_text(self):
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
+        tab = css.split(".tab-btn {", 1)[1].split("}", 1)[0]
+        self.assertIn("height: var(--control-h)", tab)
+        self.assertIn("border-radius: var(--radius-sm)", tab)
+        active = css.split(".tab-btn.active {", 1)[1].split("}", 1)[0]
+        self.assertIn("var(--brand", active)
 
 
 class TicketMenuGroupsTest(unittest.TestCase):
@@ -253,7 +309,7 @@ class TicketMenuGroupsTest(unittest.TestCase):
 
 class TagFilterUiContractTest(unittest.TestCase):
     def test_my_categories_controls_exist(self):
-        html = Path("web/index.html").read_text(encoding="utf-8")
+        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         for needle in (
             'id="tagFilter"',
             'id="btnManageTags"',
@@ -262,7 +318,7 @@ class TagFilterUiContractTest(unittest.TestCase):
             'value="paid"',
         ):
             self.assertIn(needle, html)
-        js = Path("web/app.js").read_text(encoding="utf-8")
+        js = (ROOT / "web/app.js").read_text(encoding="utf-8")
         self.assertIn('listFilter === "paid"', js)
         boot = js[js.index("async function boot") :]
         self.assertIn('setListFilter(settings.listFilter || "paid", false)', boot)

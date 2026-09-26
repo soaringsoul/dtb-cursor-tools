@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 import accounts
-from test_refresh_token import ACCESS, _jwt
+from tests.test_refresh_token import ACCESS, _jwt
 
 
 class AccountTagStoreTest(unittest.TestCase):

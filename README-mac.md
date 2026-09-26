@@ -1,5 +1,7 @@
 # cursor账号管理器 · macOS 使用说明
 
+完整说明（功能、数据目录、打包、公开仓库前要检查的事）见 [README.md](README.md)。
+
 Windows 用户：双击 `启动.bat` 即可，无需看本文件。
 
 ## 运行（源码模式，推荐）
@@ -40,5 +42,5 @@ PyInstaller 备用：双击 `build-mac-app.command`。
 
 ## 隐私
 
-- 账号 token 只存在本机（macOS 下 `~/Library/Application Support/SandClaimer/`），不上传第三方。
+- 账号 token 只存在本机（macOS 下 `~/SandClaimer/`），不上传第三方。
 - 分享本工具时，请勿附带上述目录或任何导出的账号文件。

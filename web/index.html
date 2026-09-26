@@ -99,6 +99,7 @@
             <option value="none">未分类</option>
           </select>
           <button type="button" class="btn" id="btnManageTags" title="新增、改名或删除自定义分类">管理分类</button>
+          <button type="button" class="btn" id="btnSortTime" aria-pressed="true" title="按订阅到期时间升序，更早到期的在前。再点一次改为降序。">时间 ↑</button>
           <span class="hint" id="selHint">先勾选账号再批量操作。验证 / 领取 / 删除 / 保护都只处理勾选。</span>
         </div>
         <div class="toolbar-acts">
@@ -126,8 +127,7 @@
             <tr>
               <th class="col-chk"><input type="checkbox" id="chkAll" title="全选/取消" /></th>
               <th class="sortable" data-sort="added" title="本机当前登录的账号固定在最上面，其余按导入时间，新的在上">账号 / 邮箱</th>
-              <th>套餐</th>
-              <th class="sortable" data-sort="remain" title="按剩余时间排序">订阅到期</th>
+              <th class="sortable" data-sort="remain" title="按订阅到期时间排序，再点一次切换升降序。默认升序：更早到期的在前">订阅到期</th>
               <th class="col-quota sortable" data-sort="bot" title="按 Bot 周用量排序">额度（Bot 周 / Auto 月 / 高级 月 / 超额）</th>
               <th class="col-act">操作</th>
             </tr>

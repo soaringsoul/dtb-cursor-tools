@@ -21,7 +21,7 @@ let listQuery = "";
 let listFilter = "paid";
 let tagFilter = "all";
 let tagPickId = "";
-let listSort = { key: "added", dir: 1 };
+let listSort = { key: "remain", dir: 1 };
 let helpJobs = [];
 let lastPersisted = {}; // 上次落盘的稳定状态，避免瞬时失败把已保存的数据冲掉
 let localUserId = null; // 本机 Cursor 当前登录的 user_ id；未登录为 null
@@ -223,7 +223,7 @@ function compareAccounts(a, b, ia, ib) {
     const ma = isNaN(ra) ? 1 : 0;
     const mb = isNaN(rb) ? 1 : 0;
     if (ma !== mb) return ma - mb;
-    if (!ma && ra !== rb) return ra - rb;
+    if (!ma && ra !== rb) return listSort.dir < 0 ? rb - ra : ra - rb;
     return ia - ib;
   }
   if (key === "bot") {
@@ -1994,8 +1994,8 @@ function rowMainActions(a, st) {
   const guarding = !!(g && g.running);
   const dis = !!busy;
   return [
-    { act: "verify", label: "验证", cls: "primary", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
-    { act: "switch", label: "切号", cls: "primary", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
+    { act: "verify", label: "验证", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
+    { act: "switch", label: "切号", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
     { act: "loginBot", label: "登录 Bot", title: webTok ? "网站会话：先换客户端票，再写入 Grok Bot 的 Cursor 账户并切换（不关 Cursor）" : "写入 Grok Bot 自带账户列表并切换（不关 Cursor）", disabled: dis },
     { act: "devices", label: "查看设备", title: "实时查看云端登录设备，可踢下线（成功后应立刻从列表消失）" },
     {
@@ -2196,7 +2196,7 @@ function tokenCell(a) {
     ? `<button type="button" class="btn tiny" data-act="copyToken" data-id="${esc(a.id)}" data-kind="refresh" title="复制 refresh_token">复制</button>`
     : "";
   return (
-    `<tr class="token-detail" data-id="${esc(a.id)}"><td colspan="6">` +
+    `<tr class="token-detail" data-id="${esc(a.id)}"><td colspan="5">` +
     `<div class="token-box">` +
     `<div class="token-row"><span class="token-k">Worksession</span>${wsBody}${wsCopy}</div>` +
     `<div class="token-row"><span class="token-k">Refresh</span>${rtBody}${rtCopy}</div>` +
@@ -2304,18 +2304,18 @@ function membershipLabel(m) {
   return map[String(m).toLowerCase()] || String(m);
 }
 
-function planCell(st) {
-  if (!st) return `<span class="hint">—</span>`;
+function planTags(st) {
+  if (!st) return "";
   const parts = [];
-  if (st.unlimited) parts.push(`<span class="pill ok">无限</span>`);
+  if (st.unlimited) parts.push(`<span class="pill info">无限</span>`);
   else if (st.membership) parts.push(`<span class="pill info">${esc(membershipLabel(st.membership))}</span>`);
   if (st.tierLabel) parts.push(`<span class="pill amount" title="Cursor 档位标签（非美元金额）">档 ${esc(st.tierLabel)}</span>`);
   if (st.teamId) parts.push(`<span class="pill idle">团队</span>`);
-  return parts.length ? parts.join(" ") : `<span class="hint">—</span>`;
+  return parts.length ? `<span class="plan-tags">${parts.join("")}</span>` : "";
 }
 
-// 点表头时：剩余时间最短在前；Bot 用量高的在前；导入时间新的在前。
-// 打开列表时，本机 Cursor 当前登录的账号固定在最上面，其余按导入时间，新添加的在上。
+// 打开列表时按订阅到期时间升序（更早到期的在前）。点「时间」或「订阅到期」表头切换升降序。
+// 按到期时间排序时不把本机登录账号钉在最上面。点其它表头：本机账号仍在最上；Bot 用量高的在前；导入时间新的在前。
 function sortRank(a) {
   const st = rowState[a.id];
   if (st && st.alive === false) return [2, 0];
@@ -2327,10 +2327,13 @@ function orderedAccounts() {
   return accounts
     .map((a, i) => ({ a, i }))
     .sort((x, y) => {
-      const px = localUserId && x.a.id === localUserId ? 0 : 1;
-      const py = localUserId && y.a.id === localUserId ? 0 : 1;
-      if (px !== py) return px - py;
+      if (listSort.key !== "remain") {
+        const px = localUserId && x.a.id === localUserId ? 0 : 1;
+        const py = localUserId && y.a.id === localUserId ? 0 : 1;
+        if (px !== py) return px - py;
+      }
       const cmp = compareAccounts(x.a, y.a, x.i, y.i);
+      if (listSort.key === "remain") return cmp;
       return listSort.dir < 0 ? -cmp : cmp;
     })
     .map((o) => o.a);
@@ -2359,7 +2362,8 @@ function render() {
       const addedAt = a.addedAt ? fmtTs(toMs(a.addedAt)) : "";
       const checkedAt = st && st.checkedAt ? fmtTs(toMs(st.checkedAt)) : "";
       const meta =
-        `<div class="meta">${validityPill(st)}${botOpenPill(st)}${tokTag}${refreshTag}${sessionPills(a, st)}` +
+        `<div class="meta">${validityPill(st)}${botOpenPill(st)}${tokTag}${refreshTag}${sessionPills(a, st)}</div>` +
+        `<div class="acct-times">` +
         `<span title="导入时间">导入 ${esc(addedAt || "—")}</span>` +
         (checkedAt ? `<span title="上次验证时间">验证 ${esc(checkedAt)}</span>` : "") +
         `</div>${accountTagsHtml(a, st)}`;
@@ -2369,9 +2373,8 @@ function render() {
       const rowCls = [dead ? "dead" : "", guarding ? "guarding" : ""].filter(Boolean).join(" ");
       return `<tr data-id="${esc(a.id)}"${rowCls ? ` class="${rowCls}"` : ""}>
         <td class="col-chk"><input type="checkbox" class="rowchk" data-id="${esc(a.id)}"${checked}${dis} /></td>
-        <td><div class="acct"><span class="avatar" aria-hidden="true">${esc(acctInitial(mail))}</span><div class="acct-main"><div class="mail">${esc(mail)}</div><div class="uid">${esc(a.id)}</div>${meta}
+        <td><div class="acct"><span class="avatar" aria-hidden="true">${esc(acctInitial(mail))}</span><div class="acct-main"><div class="mail-line"><span class="mail">${esc(mail)}</span>${planTags(st)}</div><div class="uid">${esc(a.id)}</div>${meta}
           <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></div></div></td>
-        <td>${planCell(st)}</td>
         <td>${expiryCell(a, st)}</td>
         <td class="col-quota">${quotaCell(st)}</td>
         <td class="col-act"><div class="act-wrap">
@@ -2425,6 +2428,28 @@ function syncSortHeaders() {
     const desc = key === "added" ? listSort.dir > 0 : listSort.dir < 0;
     th.setAttribute("aria-sort", desc ? "descending" : "ascending");
   });
+  syncTimeSortButton();
+}
+
+function syncTimeSortButton() {
+  const btn = $("btnSortTime");
+  if (!btn) return;
+  const on = listSort.key === "remain";
+  const desc = on && listSort.dir < 0;
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = !on ? "时间" : desc ? "时间 ↓" : "时间 ↑";
+  btn.title = desc
+    ? "当前按订阅到期时间降序，更晚到期的在前。再点一次改为升序。"
+    : "按订阅到期时间升序，更早到期的在前。再点一次改为降序。";
+}
+
+function toggleTimeSort() {
+  if (listSort.key === "remain") listSort.dir *= -1;
+  else {
+    listSort.key = "remain";
+    listSort.dir = 1;
+  }
+  render();
 }
 
 function updateStats() {
@@ -4206,6 +4231,8 @@ async function boot() {
   }
   const thead = document.querySelector("#paneAccounts thead");
   if (thead) thead.addEventListener("click", onSortHeaderClick);
+  const btnSortTime = $("btnSortTime");
+  if (btnSortTime) btnSortTime.addEventListener("click", toggleTimeSort);
   const moreMenu = document.querySelector(".toolbar-more-menu");
   if (moreMenu) moreMenu.addEventListener("click", closeToolbarMore);
   const tabBar = document.querySelector(".tab-bar");

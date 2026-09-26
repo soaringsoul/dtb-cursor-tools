@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import browser_login
 import sand_api
-from test_login_sessions import SAMPLE
-from test_login_sessions import _jwt
+from tests.test_login_sessions import SAMPLE
+from tests.test_login_sessions import _jwt
 
 
 class BrowserReuseTest(unittest.TestCase):

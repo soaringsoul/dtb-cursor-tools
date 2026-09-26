@@ -246,7 +246,7 @@ def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
     }
 
 
-def sort_rows(rows, sort_by="added", now_ms=0, local_user_id=None):
+def sort_rows(rows, sort_by="remain", now_ms=0, local_user_id=None, descending=False):
     rows = list(rows or [])
 
     def remain_tuple(r):
@@ -255,7 +255,10 @@ def sort_rows(rows, sort_by="added", now_ms=0, local_user_id=None):
         dead = 1 if is_dead(st) else 0
         rem = remain_ms(acc, st, now_ms)
         missing = 1 if _is_nan(rem) else 0
-        return (dead, missing, 0 if missing else rem)
+        rem_key = 0 if missing else rem
+        if descending and not missing:
+            rem_key = -rem
+        return (dead, missing, rem_key)
 
     def bot_tuple(r):
         st = r.get("state") or {}
@@ -277,6 +280,8 @@ def sort_rows(rows, sort_by="added", now_ms=0, local_user_id=None):
             return (1, 0)
 
     def pin_rank(r):
+        if sort_by == "remain":
+            return 1
         aid = str(r.get("id") or (r.get("account") or {}).get("id") or "")
         return 0 if local_user_id and aid == str(local_user_id) else 1
 

@@ -281,7 +281,7 @@ class LoginBotConfirmCopyTest(unittest.TestCase):
 
 class LoginBotUiContractTest(unittest.TestCase):
     def setUp(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         self.js = (root / "web" / "app.js").read_text(encoding="utf-8")
         self.html = (root / "web" / "index.html").read_text(encoding="utf-8")
 

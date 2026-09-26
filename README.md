@@ -1,170 +1,203 @@
-# cursor账号管理器（作者：夜雨微寒）
+# cursor账号管理器
 
-批量给 Cursor 账号领取 **Grok Bot（Sand）** 资格的桌面小工具。iOS 玻璃浅蓝风界面，自动识别两种 token 格式，支持导入 JSON、批量领取、批量添加账号。
+作者：**夜雨微寒**。当前版本见 `sand_patch.py` 里的 `TOOL_VERSION`（打包文件名也用这个号）。
+
+本机桌面工具，用来管理自己的 Cursor 登录票：导入、验证额度与订阅、切到本机 Cursor、查看并踢掉云端登录设备、给指定账号做本机设备保护。界面是 pywebview 窗口，数据只留在运行它的这台电脑上。
+
+本工具**免费**。作者不收费。若你是付费买到的安装包，请向卖家申请退款，并核对文件有没有被改过。
+
+## 适合谁用
+
+- 自己有多张 Cursor 登录票，想在一台电脑上看额度、到期日、是否失效。
+- 需要把某一张票写进本机 Cursor（切号），或写入 Grok Bot 自带账户（登录 Bot）。
+- 需要看某个号在云端还登录着哪些设备，并踢掉不该留的会话。
+
+不适合、也不应当用于：
+
+- 使用不是你自己的 token。
+- 倒卖账号、安装包或「代领资格」。
+- 把导出的账号文件、`SandClaimer` 数据目录或日志发给别人。
+
+使用 Cursor 官方接口须遵守 Cursor 的服务条款。踢设备、换登录票、切号都会改你账号在官方侧的登录状态，误操作可能导致当前票失效。
 
 ## 功能
 
-- **token 自动识别**：`access_token`（JWT，`eyJ...`）、`ws token`（`user_01XXXX::eyJ...`，即 WorkosCursorSessionToken）、以及号池常见的 `邮箱----token` 行（导入时直接认出邮箱）。
-- **导入方式**：直接粘贴（每行一个，可混排）、粘贴 `cursor_accounts_*.json` 内容、或「导入文件」选一个/多个 JSON。按 user id 自动去重，并记录每个号的**导入时间**。
-- **导入即自动验证**：导入后立刻对新号做「验证账号」（可在导入区关掉），列表里直接出现邮箱、套餐、订阅剩余时间与三池用量。
-- **验证账号**：只检查不领取。判定 token 是否有效并刷新套餐、订阅、用量。验证时同时拉取云端登录会话（客户端 / 网页数量），账号列可点开看创建与过期时间；本机 Cursor 当前登录的号打「本机」标记。失效判定以数据接口的真实状态码为准：JWT 过期（离线）、`auth/me` 无会话（实测作废的票回 **204** 而非 401）、Sand / usage-summary 回 401/403 都会标「失效」；`auth/me` 说死时还会用 api2 二次确认，避免误杀。领取时遇到失效票也会直接标「失效」，不再往领取接口打。
-- **进控制台**：用该账号的登录态打开一个**隔离浏览器**（独立 profile，不碰你日常浏览器），直接落到 Cursor 控制台 `https://cursor.com/dashboard/spending`，浏览器留给你操作。
-- **查看设备**：用该号已有登录票调官方接口拉云端设备（对应 dashboard Settings → Active Sessions），不必每次浏览器登录；每台可**踢下线**（最多约 10 分钟生效）。若被 cursor.com 人机校验拦截，可点「去浏览器过校验」用同一张票打开官方会话页手动拖动或踢设备。
-- **本机设备保护**：开启前勾选要保留的设备并设置**检测间隔（秒，默认 30）**，之后按该间隔检测账号的登录设备并**自动下线未保留设备**（开启后新登录进来的设备同样被踢）。跑在 Python 守护线程里，界面空闲也照常工作；可同时给多个账号开。
-- **批量领取**：给账号领 Sand（Grok Bot）资格，已开通短路、团队号自动带 `teamId`、个人号走试用、免费号标记「需绑卡」；领完只轻量刷 Bot 池，并汇总「新开通 / 已开通 / 需绑卡 / 失败」。
-- **批量删除**：勾选后「删除选中」；「清空」删全部。
-- **三池额度分开看**：Bot 周用量（每周重置，接口不回重置时间时按周期起点 + 7 天推算）、Auto 月用量、高级(API) 月用量；超额（按量已扣）用同一套进度条，默认上限 $20。不再显示 Cursor 的混合「总用量」（它是 Auto+API 两池加权，和任一池都对不上）。
-- **导出 txt**：先按套餐分大类（Ultra → Pro+ → Pro → 团队 → Free），大类里再分「未用 Bot 额度 / 已用 Bot 额度 / 到期不续」，失效与未验证单独放最后；文件头给出各套餐数量，每段头部注明分类依据，并逐个列出该段每个号的到期 / 剩余 / Sand 状态 / 三池用量；段内按剩余时间从短到长。账号行保持 `邮箱----user_id::token`，可原样再导入。
-- **Sand 资格口径**：验证时同时读 `get-sand-access-status`（权威）。实测 Pro / Pro+ / Ultra 套餐**自带** Sand 资格（接口返回 `proAndSuperGrokPlansGrantAccess: true`），所以付费号一导入验证就显示「已开通 · 套餐自带」，不是被领取了；「领取」只对免费号（需绑卡）和团队号有实际动作。
-- **绕过本机 DNS 劫持**：内置 DoH 解析 `cursor.com` / `api2.cursor.sh` 真实 IP，即使本机跑着会劫持这些域名的网关（如 cgw）也能直连真实 Cursor。多家 DoH 并发竞速（Cloudflare 1.1.1.1、阿里 223.5.5.5 / 223.6.6.6、腾讯 1.12.12.12 / 120.53.53.53），谁先答谁赢；国内网络 1.1.1.1 常不可达，之前每个请求要白等 8 秒超时，现在 0.3 秒出结果，全部失败也只回落系统 DNS 一次、两分钟内不再重试。
+### 账号列表
 
-## 运行（开发）
+- **导入**：粘贴文本，或选 `cursor_accounts_*.json`。支持裸 JWT（`eyJ...`）、`user_01XXXX::eyJ...`（WorkosCursorSessionToken），以及 `邮箱----token`。按 user id 去重，重复导入不覆盖首次导入时间。
+- **导入后自动验证**（可关）：只读查询邮箱、套餐、订阅到期、Bot / Auto / 高级 用量和云端会话，不领取。
+- **探测本机账号**：读取本机 Cursor 当前登录的号。该号在按导入时间排序时固定在最上面；按订阅到期时间排序时不置顶，以免打乱时间顺序。
+- **筛选**：付费账户、Free、本机、保护中、失效、即将到期（7 天内）、Bot 用尽、需绑卡。可与「我的分类」同时生效。
+- **我的分类**：自定义标签，一个账号可打多个。分类存在本机设置里，换 token 不会丢掉已打的标签。
+- **排序**：默认按订阅到期时间升序（更早到期的在前）。点工具栏「时间」或表头「订阅到期」切换降序。点「账号 / 邮箱」按导入时间（新的在前），点额度列按 Bot 周用量。
+- **套餐**：显示在邮箱右侧，不再单独占一列。
+- **订阅到期**：优先显示待取消日，否则显示本计费周期结束。附带自动续费 / 到期不续、剩余时间、月付或年付，以及 token 本身的「登录至」。
+- **额度**：Bot 周、Auto 月、高级 月、超额（按量，进度按 $20 画，接口不提供封顶）。付费套餐自带 Sand 时，验证后会显示「已开通bot」，这不是领取动作。
+- **导出全部**：文本按套餐分大类，大类里再分未用 Bot / 已用 Bot / 不续费。账号行仍是 `邮箱----user_id::token`，可以再导入。
+- **显示 Token**：展开 Worksession 与 refresh_token，可分别复制。默认关闭。
+
+批量验证、领取、删除、保护都**只处理勾选的行**。未勾选时对应按钮不可用。
+
+### 行内操作
+
+| 操作 | 做什么 | 要注意 |
+|---|---|---|
+| 验证 | 只读刷新套餐、订阅、用量、会话 | 不会领取，也不会改本机 Cursor |
+| 切号 | 关掉当前 Cursor，写入该号登录态后再打开 | 默认先向官方换一张新登录票。网站会话会先换成客户端票，稍慢 |
+| 登录 Bot | 把该号写入 Grok Bot 自带账户并切换 | 不关 Cursor。若开了系统代理 / TUN，官方页可能提示「重新连接你的电脑」，先确认再继续 |
+| 查看设备 | 拉官方 Active Sessions | 可勾选后踢下线。接口没有电脑名和 IP |
+| 本机保护 | 打开保护页 | 须先在本机 Cursor 登录该号。停止保护只在保护页里 |
+| 进控制台 | 用隔离浏览器打开 Cursor 控制台 | 每个账号一个独立浏览器 profile，不影响日常浏览器 |
+
+窄屏会藏起操作列，改由账号格里的「操作 ▾」打开全部动作。
+
+### 本机保护
+
+1. 先在本机 Cursor 登录要保护的号。
+2. 打开「本机保护」，勾选要**留下**的设备。保留名单不能为空。
+3. 可先「立即删除未勾选」，或设检测间隔（默认 30 秒，范围 5–3600）后启动。
+4. 之后新出现、不在保留名单里的会话会被踢。可同时保护多个号。
+5. 离开保护页或关掉窗口**不会**自动停止已启动的保护。重启本工具后需要重新点启动（会回填上次的勾选和间隔）。
+6. 若踢掉的是本工具自己正在用的那张票，保护最多约 10 分钟后失效并自动停止。
+
+「检测登录时间」用设备创建时间与本机当前时间比较，落在设定间隔内的标成刚登录，并只勾选这些设备。
+
+### 云端 Agent
+
+与登录票列表分开。把 Cursor Dashboard 里创建的用户 API Key（`crsr_...`）粘贴进来，可列出该密钥下的 Cloud Agent 并删除。密钥只存本机。一键清理会永久删除，删前有数量确认。
+
+### 领取 Sand（Grok Bot）资格
+
+- **Pro / Pro+ / Ultra**：套餐自带资格。验证就能看到「已开通 · 套餐自带」。「领取」只是再确认一次。
+- **免费号**：领取需要自己在浏览器里绑卡。工具会标「需绑卡」，「网页领取」用该号登录态打开领取页。
+- **团队号**：走团队通道，并带上 `teamId`。
+
+## 环境
+
+- Python 3.11（开发与打包脚本按 3.11 写）。
+- 桌面窗口依赖 [pywebview](https://pywebview.flowrl.com/)。
+  - Windows：Edge WebView2（Win10/11 通常已有）。
+  - macOS：系统 WebKit。
+- 「进控制台 / 网页领取」需要本机有 Chrome、Chromium 或 Edge。
+- 「切号」要能关掉并重启本机 Cursor，并写入它的登录库。macOS 上若写入失败，看系统是否拦截了该应用。
+
+## 从源码运行
 
 ```bash
 python3 -m pip install -r requirements.txt
 python3 app.py
 ```
 
-纯浏览器预览界面（演示数据，不连 Cursor、也不打开桌面 WebView）：
+macOS 也可以：
+
+```bash
+python3 -m pip install -r requirements-mac.txt
+python3 app.py
+```
+
+仓库里若有 `install-mac.command` / `start-mac.command`，双击即可。首次若被系统拦截，在 Finder 里对该文件选右键 → 打开。
+
+只看界面、不连 Cursor、不用桌面 WebView：
 
 ```bash
 python3 preview_server.py --port 43147
 ```
 
-> Windows 需要 **Edge WebView2 运行时**（Win10/11 一般自带；缺失时到微软官网装「Evergreen WebView2 Runtime」）。
-> 「网页领取 / 进控制台」需要本机装有 Chrome / Chromium / Edge（Windows、macOS、Linux 都会自动找，Linux 另查 PATH、`/usr/bin`、`/opt`、snap）。
+浏览器打开 `http://127.0.0.1:43147/`。这是演示数据，不能用来切号或踢设备。
 
-单元测试（不联网）：
+### 测试
+
+不联网：
+
+在仓库根目录执行：
 
 ```bash
-python3 -m unittest test_login_sessions.py test_device_guard.py test_browser_reuse.py -v
+python3 -m unittest discover -s tests -t .
 ```
 
-## 进控制台 / 查看设备 / 本机设备保护
+`preview_server.py` 只给界面预览，不要把它算进发布物。
 
-这三项已整合进本桌面工具，账号列表每一行都有对应按钮（窄屏时收进账号格里的「操作 ▾」菜单）。
+## 数据放在哪
 
-### 进控制台
+目录：
 
-`Api.open_dashboard(account_id)` → `browser_login.open_with_token(user_id, jwt, url="https://cursor.com/dashboard/spending")`：
-启动带调试端口 + 按账号隔离 profile 的 Chrome / Edge，通过 CDP 注入 `WorkosCursorSessionToken`（HttpOnly，
-命令行 / URL 都带不进普通浏览器）。注入时带上 `https://cursor.com` 的 url 和 `sourceScheme=Secure`，避免新版 Chrome 把 Secure cookie 丢掉后被 302 到 `authenticator.cursor.sh`。若仍停在登录页会再注入并重跳控制台。已有 cursor.com 标签就复用并前置。浏览器留给用户。与插件 `openAccountDashboard` 行为一致。
+- Windows：`%LOCALAPPDATA%\SandClaimer\`
+- macOS / Linux：`~/SandClaimer/`
 
-### 查看设备（踢下线）
+常见文件：
 
-- 列表：`GET https://cursor.com/api/auth/sessions`（会话 cookie + `Origin`/`Referer`），`Api.list_sessions` **实时**拉取，不依赖上次验证的缓存。缺来源头时接口会回 403，和登录态作废不是一回事。
-- 踢下线：`POST https://cursor.com/api/auth/sessions/revoke`，body `{"sessionId": "..."}`，会话 cookie + `Origin` 过 CSRF；
-  HTTP 200 即视为已提交（`sand_api.revoke_session`，任何失败都返回 `{ok, error, status}` 不抛）。服务端最多约 10 分钟才真正生效。
-- 弹窗「登录设备」：读取中 / 失败 / 空 三态；每台显示类型（客户端 / 网页 / 其他）、短 sessionId、创建 / 过期时间，
-  「踢下线」按钮点了先在行内确认。与本工具所用登录票同类型的会话会标出来——踢掉它该号在本工具里就失效了。
-- 人机校验（Vercel Security Checkpoint）不是 token 失效：额度 / 验证仍走 token。失败时可点「浏览器打开」→
-  `Api.open_sessions_page` 注入 cookie 打开 `https://cursor.com/dashboard/settings#active-sessions`。
-  每个账号只开一扇窗口；窗口还在时检测 / 踢下线走该页的 `fetch`，不会每轮再拉起浏览器。关窗后才回落普通 HTTP。
-应用重启后会从仍占用该 profile 的 Chrome 进程找回调试口（不依赖内存里的端口）；找不到调试口时不会再启动第二次，避免 Chrome 单例只打开 `about:blank`。
+| 文件 | 内容 |
+|---|---|
+| `accounts.json` | 账号与 token。Windows 上能用 DPAPI 时会加密；其它系统是本机明文 |
+| `status.json` | 上次验证到的套餐、额度、订阅 |
+| `settings.json` | 界面设置、自定义分类、筛选 |
+| `device_guard.json` | 保护名单与统计，不含 token |
 
-### 本机设备保护（`device_guard.py`）
+这些文件**不要**提交到 git，也不要打进安装包。`.gitignore` 未忽略用户主目录，但忽略了构建产物。克隆仓库后的工作区里不应出现上述 json。
 
-- **开启前**弹窗列出当前登录设备并让你**勾选要保留的**（本机账号默认勾上全部客户端会话；重开本工具会回填上次的勾选）。
-  保留名单为空一律拒绝启动，否则会把包括本机在内的所有设备全踢掉。
-- **开启后**按设定的**检测间隔（秒，默认 30，可填 5–3600）**一轮：拉一次设备列表，把不在保留名单里的 sessionId 逐个 `revoke`。开启后新登录进来的设备不在名单里，同样会被踢。改间隔要先停止再重新启动。
-- 每个账号一个守护线程（`Api.device_guard_start / stop / stop_all / status`），同一账号绝不重叠两个循环；每轮异常只记 `lastError`，线程不会死；
-  拉列表失败的那一轮不踢任何人；同一会话踢过后 30 秒内不重复发 revoke（服务端生效有延迟，列表里可能还挂着）；
-  连续 30 轮 401/403（本工具用的票自己失效，约 15 分钟）自动停止。
-- 行内显示紫色「保护中 · 已踢 N」标签（点开看启动时间 / 最近检测 / 轮次 / 已踢列表），按钮变成「停止保护」；账号列表标题旁有全局提示。
-- 名单与统计落在 `SandClaimer/device_guard.json`（不存 token）。**重启本工具不会自动恢复踢人**，需要重新点「本机保护」启动。
+分享工具时只发源码或你自己打出来的安装包。不要附带 `SandClaimer` 目录、导出的 txt，或任何带 token 的 JSON。
 
-## 打包（Nuitka 编译 + 安装包）
+## 打包
 
-**Windows：**
+版本号只改 `sand_patch.TOOL_VERSION`。Windows 与 macOS 脚本都会读它。
+
+**Windows**（在 Windows 上）：
 
 ```bat
 build_win.bat
 ```
 
-产物：
+得到 `nuitka-out\SandClaimer-<版本>.exe`。若本机有 Inno Setup 6，还会得到安装向导。`build.bat` 会转去调用 `build_win.bat`。
 
-- `nuitka-out\SandClaimer-<版本>.exe` —— 单文件绿色版，双击即用（文件名带版本号，如 `SandClaimer-1.1.6.exe`）。
-- `installer\SandClaimer-Setup-<版本>.exe` —— 中文安装向导，装到 Program Files 并建开始菜单/桌面快捷方式（需本机已装 Inno Setup 6）。
-
-`build.bat` 会转调 `build_win.bat`。
-
-**macOS：**
+**macOS**（必须在 Mac 上，系统自带 bash 3.2 即可）：
 
 ```bash
 ./build_mac.sh
 ```
 
-产物 `SandClaimer-<版本>.dmg`（内含 `cursor账号管理器.app`）。
+得到 `SandClaimer-<版本>.dmg`，以及 `nuitka-out/cursor账号管理器.app`。dmg 里可以把 app 拖进「应用程序」。未签名，首次需要右键 → 打开。
 
-> 版本号统一取自 `sand_patch.py` 的 `TOOL_VERSION`，`build_win.bat` / `build_mac.sh` / `make_share.ps1` 会自动读取并写进产物文件名，无需多处手改。
+Nuitka 把 Python 编成原生可执行文件，启动比把 `.pyc` 打进去的打包方式快。这不是加密：机器码仍可被分析，不能当成保护 token 的手段。token 的保护方式是「不要离开本机」。
 
-`build_win.bat` 会依次：装依赖 → 修补 Nuitka 的 pywebview 插件 → 生成图标 → Nuitka 编译 → Inno Setup 打安装包。
-
-### 为什么用 Nuitka（而非 PyInstaller）
-
-- **启动更快**：Python 源码被编译成 C/机器码，不是解释执行的 `.pyc`。
-- **天然混淆/加密**：产物是原生机器码，源码不可还原；onefile 运行时把负载解压到临时目录再执行（相当于加密封装），比 PyInstaller 的可直接解包 `.pyc` 强得多。
-- `build_win.bat` 用 `--mingw64 --assume-yes-for-downloads`：首次编译 Nuitka 会自动下载并缓存 MinGW64，无需手动装 MSVC；之后走缓存会快很多。
-
-> `patch_plugin.py`：Nuitka 4.1.3 的 pywebview 插件在 Windows 白名单里漏了 pywebview 6.2.x 新增的 `webview.platforms.win32`，会导致打包后 winforms 后端起不来。该脚本幂等地把它补进白名单，`build_win.bat` 已自动调用。
->
-> `ChineseSimplified.isl`：安装向导的简体中文语言包（Inno Setup 默认不含）。
-
-## 领取规则（与 Cursor 官方一致）
-
-- **付费账号**（Pro+ / Ultra / Team）：直接开通，无需绑卡。
-- **免费账号**：领取需先验证信用卡，工具会标记「需绑卡」（如返回验证链接会一并给出）。
-- **团队账号**：走团队通道并自动带上 `teamId`（从 `get-me` 读取）。团队级开通是否覆盖全部成员座位，取决于 Cursor 侧策略。
-
-## 用到的官方接口（均实测确认）
-
-| 用途 | 方法 | 端点 | 鉴权 |
-|---|---|---|---|
-| Bot 周额度 | POST | `api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` | Bearer accessToken |
-| Auto / 高级 月额度、账单周期、按量付费 | GET | `cursor.com/api/usage-summary` | 会话 cookie |
-| 订阅状态（续费 / 待取消 / 年付） | GET | `cursor.com/api/auth/stripe` | 会话 cookie |
-| 探活（验证账号） | GET | `cursor.com/api/auth/me` | 会话 cookie |
-| 登录会话 / 设备列表 | GET | `cursor.com/api/auth/sessions` | 会话 cookie |
-| 踢下线（查看设备 / 本机设备保护） | POST | `cursor.com/api/auth/sessions/revoke`（body `{sessionId}`） | cookie + Origin |
-| 查资格 | POST | `cursor.com/api/dashboard/get-sand-access-status` | 会话 cookie |
-| 取 teamId / 邮箱 | POST | `cursor.com/api/dashboard/get-me` | 会话 cookie |
-| 个人领取 | POST | `cursor.com/api/dashboard/start-sand-trial` | cookie + Origin |
-| 团队领取 | POST | `cursor.com/api/dashboard/request-sand-team-access`（body `{teamId}`） | cookie + Origin |
-
-### 额度口径（为什么要分三池）
-
-`usage-summary` 的 `individualUsage.plan` 里同时有 `autoPercentUsed`（Auto 池）、`apiPercentUsed`（高级模型 / API 池）和 `totalPercentUsed`。
-实测 `totalPercentUsed` = (Auto 已用 + API 已用) / (Auto 上限 + API 上限)，是两池加权的混合值，与任何一池都不相等，
-所以工具只把 Auto、高级、Bot（`GetSandUsageStatus.usagePercent`，按周重置）三个数分开展示，混合值仅放在鼠标悬停提示里。
-`individualUsage.onDemand.used` > 0 表示该号已开按量付费并产生真实扣费；列表里用第四条进度条显示，默认超额上限 $20（接口不给封顶）。
-
-## 安全
-
-- token 只在本机内存与本机↔Cursor 官方之间使用，不上传任何第三方服务。
-- 请勿把含 token 的 JSON 或本工具日志分享给他人。
-
-## 项目结构
+## 目录
 
 ```
-sand-claimer/
-├─ app.py                # pywebview 入口 + JS 桥接 + 导出文本拼装
-├─ sand_api.py           # Cursor Sand 查询/领取/验证 + 登录会话列表/踢下线（三池额度口径见上）
-├─ browser_login.py      # CDP 注入登录态开隔离浏览器（网页领取 / 进控制台），Win / macOS / Linux 找浏览器
-├─ device_guard.py       # 本机设备保护：按秒间隔（默认 30）检测登录设备、自动下线未保留设备（守护线程 + 名单记忆）
-├─ accounts.py           # token/JSON 导入与账号表（记录导入时间、支持 邮箱----token）
-├─ test_accounts_usage.py# 账号存储 / 额度解析 / 验证 / 导出文本 的单元测试（不联网）
-├─ test_login_sessions.py# 云端登录会话归一化 / 拉取 / 踢下线 / get_status 接入（不联网）
-├─ test_device_guard.py  # 本机设备保护：踢未保留 / 留已保留 / 空名单拒绝 / 停止 / 持久化（不联网）
-├─ sand_patch.py         # 定位本机 Cursor / 关开进程（切号用）；TOOL_VERSION 供打包读取
-├─ resolve.py            # DoH 绕过 DNS 劫持
-├─ web/                  # 玻璃风 UI（index.html / style.css / app.js）
-├─ make_icon.py          # 生成多尺寸 icon.ico（自带沙漏图标，可用 assets/icon-1024.png 覆盖）
-├─ patch_plugin.py       # 修补 Nuitka pywebview 插件（补 win32）
-├─ installer.iss         # Inno Setup 安装包脚本
-├─ ChineseSimplified.isl # 安装向导简体中文语言包
-├─ icon.ico              # 应用图标（由 make_icon.py 生成）
-├─ requirements.txt
-├─ build_win.bat         # Windows 一键：Nuitka 编译 + 打安装包
-├─ build_mac.sh          # macOS 一键：Nuitka 编译 .app + .dmg
-└─ build.bat             # 转调 build_win.bat
+app.py              窗口入口，以及网页调用的本机接口
+web/                界面（index.html、style.css、app.js）
+accounts.py         导入、去重、账号落盘
+sand_api.py         只读额度/订阅/会话，以及领取、踢下线
+browser_login.py    隔离浏览器，注入该号的登录 cookie
+device_guard.py     本机保护的后台循环
+local_cursor.py     读写本机 Cursor 登录库（切号）
+login_bot.py        写入 Grok Bot 账户
+ops_ui.py           列表筛选、排序、导出分组（与界面同一套规则）
+resolve.py          用 DNS over HTTPS 解析 cursor.com，避免本机错误 DNS
+sand_patch.py       版本号，以及定位 / 开关本机 Cursor
+preview_server.py   浏览器里预览界面
+build_mac.sh        macOS 打包
+build_win.bat       Windows 打包
+tests/              单元测试
 ```
+
+## 隐私
+
+- 登录票和 API Key 只在本进程和本机 ↔ Cursor 官方之间使用，不上传到作者或其它第三方。
+- 验证、看额度、看设备是读官方接口。切号、登录 Bot、踢设备、领取会改官方侧状态。
+- 隔离浏览器的 profile 在本机，按账号分开。
+- 开源之后也一样：任何人拿到你的 token 文件，就能以该号调用官方接口。请把 `~/SandClaimer` 当成密码目录。
+
+## 公开仓库之前
+
+1. 选定许可证并提交 `LICENSE`。本仓库目前**没有**许可证文件；没有许可证时，别人默认不能随意复制或再分发。
+2. 确认提交内容里没有 `accounts.json`、`status.json`、导出 txt、真实 token、API Key。
+3. 不要提交 `nuitka-out/`、`.nuitka_venv/`、`*.dmg`（已在 `.gitignore`）。
+4. 用一份干净克隆跑一遍 `python3 app.py` 和单元测试，确认不依赖你机器上的私有路径。
+
+## 界面约定（给改 UI 的人）
+
+视觉按 Ant Design v6 的密度来，主色用地图帮橙 `#FA8C16`，不用 Ant Design 默认蓝。
+
+- 正文字号 14px，字重只用 400 和 600。
+- 按钮、输入、页签高 32px，圆角 6px。标签圆角 4px。头像和状态点保持圆形。
+- 账号行里的操作是描边按钮。实心主按钮只用于整页上的主动作（例如探测本机账号、弹窗确认）。
+- 表格用紧凑内边距。订阅到期列要宽到能放下 `YYYY-MM-DD HH:MM` 一整行。
