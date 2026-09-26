@@ -129,13 +129,14 @@ main {
 .logo {
   width: 36px;
   height: 36px;
-  border-radius: var(--radius-sm);
+  border-radius: 10px;
   flex: none;
   display: grid;
   place-items: center;
   color: #fff;
-  font-weight: 600;
-  font-size: 16px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: -0.04em;
   background: var(--brand);
   border: 0;
 }

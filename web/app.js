@@ -3384,7 +3384,7 @@ async function exportAllClassified() {
     .join(" · ");
   const unrefreshed = buckets.unverified.length;
   const header = [
-    `cursor账号管理器 导出 ${fmtTs(Date.now())} · 共 ${seen.size} 个账号 · 先按套餐分大类（Ultra > Pro+ > Pro > 团队 > Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，段内按剩余时间从短到长（最先到期在最前）`,
+    `cursorAdmin 导出 ${fmtTs(Date.now())} · 共 ${seen.size} 个账号 · 先按套餐分大类（Ultra > Pro+ > Pro > 团队 > Free），大类里再分「未用 Bot / 已用 Bot / 不续费」，段内按剩余时间从短到长（最先到期在最前）`,
     `套餐分布：${summary}`,
     "账号行格式：邮箱----user_id::token（可原样粘回导入）；以 # 开头的是注释，[n] 与下方第 n 行账号一一对应",
   ];

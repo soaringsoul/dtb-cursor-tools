@@ -23,7 +23,7 @@ class AppInfoTest(unittest.TestCase):
     def test_version_matches_sand_patch(self):
         info = ops_ui.app_info()
         self.assertEqual(info["version"], sand_patch.TOOL_VERSION)
-        self.assertEqual(info["name"], "cursor账号管理器")
+        self.assertEqual(info["name"], "cursorAdmin")
 
     def test_help_jobs_are_three_operator_tasks(self):
         titles = [j["title"] for j in ops_ui.HELP_JOBS]

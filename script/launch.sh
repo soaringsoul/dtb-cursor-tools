@@ -1,5 +1,5 @@
 #!/bin/bash
-# cursor账号管理器 · 用本目录 venv 启动
+# cursorAdmin · 用本目录 venv 启动
 # 用法：
 #   ./script/launch.sh              启动桌面应用
 #   ./script/launch.sh start        同上
@@ -65,7 +65,7 @@ CMD="${1:-start}"
 case "$CMD" in
   start|run)
     ensure_venv
-    echo "启动 cursor账号管理器 …（关闭窗口即退出）"
+    echo "启动 cursorAdmin …（关闭窗口即退出）"
     exec "$VENV/bin/python" -m app
     ;;
   preview)

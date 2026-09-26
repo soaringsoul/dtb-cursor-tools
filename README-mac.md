@@ -1,4 +1,4 @@
-# cursor账号管理器 · macOS 使用说明
+# cursorAdmin · macOS 使用说明
 
 完整说明（功能、数据目录、打包、公开仓库前要检查的事）见 [README.md](README.md)。
 
@@ -32,7 +32,7 @@ chmod +x build_mac.sh
 ./build_mac.sh
 ```
 
-产物：`SandClaimer-<版本>.dmg`（项目根目录，版本取自 `app/sand_patch.py` 的 `TOOL_VERSION`）。
+产物：`cursorAdmin-<版本>.dmg`（项目根目录，版本取自 `app/sand_patch.py` 的 `TOOL_VERSION`）。
 
 把 `.dmg` 发群，Mac 用户下载 → 打开 → 拖进「应用程序」→ 双击运行（首次右键图标 → 打开绕过 Gatekeeper）。
 

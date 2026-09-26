@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from app import sand_patch
 
-APP_NAME = "cursor账号管理器"
+APP_NAME = "cursorAdmin"
 EXPIRING_MS = 7 * 24 * 3600 * 1000
 
 HELP_JOBS = [

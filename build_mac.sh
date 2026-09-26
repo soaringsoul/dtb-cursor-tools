@@ -1,13 +1,13 @@
 #!/bin/bash
-# cursor账号管理器 · macOS Nuitka 打包（.app + .dmg）
+# cursorAdmin · macOS Nuitka 打包（.app + .dmg）
 # 用法：./build_mac.sh
-# 产物：SandClaimer-<版本>.dmg（项目根目录与 nuitka-out/ 各一份）
+# 产物：cursorAdmin-<版本>.dmg（项目根目录与 nuitka-out/ 各一份）
 # 版本号取自 sand_patch.TOOL_VERSION。只能在 Mac 上跑。
 set -euo pipefail
 cd "$(dirname "$0")" || exit 1
 
-APP_NAME="cursor账号管理器"
-BUNDLE_ID="com.sand.claimer"
+APP_NAME="cursorAdmin"
+BUNDLE_ID="com.cursoradmin.app"
 PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 if [ -n "${PYTHON:-}" ]; then
@@ -34,7 +34,7 @@ if [ -z "$VER" ]; then
   exit 1
 fi
 echo "版本 = $VER"
-DMG="SandClaimer-$VER.dmg"
+DMG="cursorAdmin-$VER.dmg"
 VENV=".nuitka_venv"
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
@@ -92,7 +92,8 @@ python -m nuitka \
   --lto=no \
   "${ICON_ARG[@]}" \
   --include-package=app \
-  app/__main__.py
+  --python-flag=-m \
+  app
 
 APP_PATH=""
 if [ -d "nuitka-out/${APP_NAME}.app" ]; then
@@ -107,10 +108,20 @@ if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
   echo "[X] 没生成 .app，请看上面 Nuitka 报错。"
   exit 1
 fi
+# Nuitka 用包入口时可能产出 __main__.app / app.app，统一改成产品名
+if [ "$(basename "$APP_PATH")" != "${APP_NAME}.app" ]; then
+  rm -rf "nuitka-out/${APP_NAME}.app"
+  mv "$APP_PATH" "nuitka-out/${APP_NAME}.app"
+  APP_PATH="nuitka-out/${APP_NAME}.app"
+fi
 
 echo "[5/6] 写入权限说明 + ad-hoc 签名 ..."
 PLIST="$APP_PATH/Contents/Info.plist"
 PB=/usr/libexec/PlistBuddy
+$PB -c "Set :CFBundleName $APP_NAME" "$PLIST" 2>/dev/null || \
+  $PB -c "Add :CFBundleName string $APP_NAME" "$PLIST" 2>/dev/null || true
+$PB -c "Set :CFBundleDisplayName $APP_NAME" "$PLIST" 2>/dev/null || \
+  $PB -c "Add :CFBundleDisplayName string $APP_NAME" "$PLIST" 2>/dev/null || true
 $PB -c "Set :CFBundleShortVersionString $VER" "$PLIST" 2>/dev/null || \
   $PB -c "Add :CFBundleShortVersionString string $VER" "$PLIST" 2>/dev/null || true
 $PB -c "Set :CFBundleVersion $VER" "$PLIST" 2>/dev/null || \
@@ -125,7 +136,7 @@ echo "[6/6] 生成 ${DMG}（含 Applications 拖放安装）..."
 DMG_STAGE="nuitka-out/dmg-stage"
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE"
-ditto "$APP_PATH" "$DMG_STAGE/$(basename "$APP_PATH")"
+ditto "$APP_PATH" "$DMG_STAGE/${APP_NAME}.app"
 ln -s /Applications "$DMG_STAGE/Applications"
 rm -f "nuitka-out/$DMG" "$DMG"
 hdiutil create -volname "$APP_NAME $VER" -srcfolder "$DMG_STAGE" -ov -format UDZO "nuitka-out/$DMG"

@@ -1,4 +1,4 @@
-"""cursor账号管理器：pywebview（Windows 用 Edge WebView2）+ 玻璃风 Web UI。
+"""cursorAdmin：pywebview（Windows 用 Edge WebView2）+ 玻璃风 Web UI。
 
 - UI 在 web/ 下（HTML/CSS/JS，iOS 玻璃浅蓝风）。
 - Python 提供导入/领取能力，通过 window.pywebview.api 暴露给前端。
@@ -1194,7 +1194,7 @@ def main() -> None:
     install_quiet_local_http()
     api = Api()
     window = webview.create_window(
-        "cursor账号管理器",
+        "cursorAdmin",
         resource_path(os.path.join("web", "index.html")),
         js_api=api,
         width=1440,

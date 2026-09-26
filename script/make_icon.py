@@ -1,19 +1,19 @@
-"""生成 Windows 多尺寸 icon.ico，供 Nuitka 打包用。
+"""生成 Windows 多尺寸 icon.ico，以及 assets/icon-1024.png（macOS .icns 同源）。
 
-自带一个「蓝色玻璃 + 金色流沙」的沙漏图标（与 UI 的 iOS 玻璃浅蓝风呼应），
-无需任何外部素材即可构建。若想换成自定义图案，把 1024x1024 的 PNG 放到
-assets/icon-1024.png 即可覆盖内置图案。
+内置「CA」字标：地图帮橙底 + 白字，对应产品名 cursorAdmin。
+若 assets/icon-1024.png 已存在且未加 --force，则直接用该 PNG 出 ico。
 
-关键：ICO 的每一帧都写成 BMP/DIB（BGRA + AND 掩码），不用 PNG 帧。
-Windows 的 UpdateResource（Nuitka 打包时用来把图标塞进 app.dll/exe）对 PNG
-编码的图标帧会以 error code 22 失败；DIB 帧才稳。Pillow 新版会把所有帧存成
-PNG，故这里自己拼 ICO 容器。
+ICO 每一帧写成 BMP/DIB（BGRA + AND 掩码），不用 PNG 帧——Windows UpdateResource
+对 PNG 帧会失败；Pillow 新版默认 PNG 帧，故自己拼 ICO 容器。
 """
 
+from __future__ import annotations
+
+import argparse
 import os
 import struct
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(ROOT, "assets")
@@ -21,10 +21,29 @@ LOCAL_PNG = os.path.join(ASSETS, "icon-1024.png")
 ICON_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 SIZE = 1024
-TOP_BLUE = (142, 197, 255)
-BOTTOM_BLUE = (58, 123, 255)
-GLASS = (255, 255, 255, 236)
-SAND = (255, 199, 102, 255)
+# 与 web/style.css --brand / --brand-dark 对齐
+BRAND = (250, 140, 22, 255)
+BRAND_DARK = (212, 107, 8, 255)
+INK = (255, 255, 255, 255)
+
+_FONT_CANDIDATES = (
+    "/System/Library/Fonts/SFNSRounded.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "C:/Windows/Fonts/arialbd.ttf",
+    "C:/Windows/Fonts/segoeuib.ttf",
+)
+
+
+def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for path in _FONT_CANDIDATES:
+        if not os.path.isfile(path):
+            continue
+        try:
+            return ImageFont.truetype(path, size=size, index=0)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def _vertical_gradient(size: int, top: tuple, bottom: tuple) -> Image.Image:
@@ -44,56 +63,37 @@ def _vertical_gradient(size: int, top: tuple, bottom: tuple) -> Image.Image:
 
 
 def _render_icon() -> Image.Image:
-    gradient = _vertical_gradient(SIZE, TOP_BLUE, BOTTOM_BLUE)
+    """圆角橙底 + 居中白字 CA。"""
+    gradient = _vertical_gradient(SIZE, BRAND, BRAND_DARK)
     mask = Image.new("L", (SIZE, SIZE), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, SIZE - 1, SIZE - 1], radius=224, fill=255)
+    # 设计口径「圆角 10」：按 100 单位画板换算到 1024 → 约 10% 边长
+    corner = SIZE * 10 // 100
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, SIZE - 1, SIZE - 1], radius=corner, fill=255)
     img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     img.paste(gradient, (0, 0), mask)
 
     draw = ImageDraw.Draw(img)
-    cx, cy = SIZE // 2, SIZE // 2
-    cap_half, cap_h = 168, 48
-    top_cap_y, bottom_cap_y = 250, SIZE - 250 - cap_h
-
-    draw.rounded_rectangle(
-        [cx - cap_half, top_cap_y, cx + cap_half, top_cap_y + cap_h], radius=22, fill=GLASS
-    )
-    draw.rounded_rectangle(
-        [cx - cap_half, bottom_cap_y, cx + cap_half, bottom_cap_y + cap_h], radius=22, fill=GLASS
-    )
-
-    glass_half = 138
-    draw.polygon(
-        [(cx - glass_half, top_cap_y + cap_h), (cx + glass_half, top_cap_y + cap_h), (cx, cy)],
-        fill=GLASS,
-    )
-    draw.polygon(
-        [(cx - glass_half, bottom_cap_y), (cx + glass_half, bottom_cap_y), (cx, cy)],
-        fill=GLASS,
-    )
-
-    sand_half = 104
-    draw.polygon(
-        [(cx - sand_half, top_cap_y + cap_h + 6), (cx + sand_half, top_cap_y + cap_h + 6), (cx, cy - 26)],
-        fill=SAND,
-    )
-    draw.polygon(
-        [(cx - sand_half, bottom_cap_y - 6), (cx + sand_half, bottom_cap_y - 6), (cx, cy + 40)],
-        fill=SAND,
-    )
-    draw.rectangle([cx - 7, cy - 26, cx + 7, cy + 40], fill=SAND)
+    label = "CA"
+    # 略偏大，小尺寸缩略后仍能辨认
+    font = _load_font(520)
+    bbox = draw.textbbox((0, 0), label, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    # SF/Arial 的 bbox 顶边常略偏上，视觉居中再下移一点
+    x = (SIZE - tw) / 2 - bbox[0]
+    y = (SIZE - th) / 2 - bbox[1] + 18
+    draw.text((x, y), label, font=font, fill=INK)
     return img
 
 
-def load_source() -> Image.Image:
-    if os.path.exists(LOCAL_PNG):
+def load_source(*, force: bool = False) -> Image.Image:
+    if os.path.exists(LOCAL_PNG) and not force:
         print("使用自定义图标：", LOCAL_PNG)
         return Image.open(LOCAL_PNG).convert("RGBA")
-    print("未找到 assets/icon-1024.png，生成内置沙漏图标")
+    print("生成 cursorAdmin「CA」字标图标")
     img = _render_icon()
     os.makedirs(ASSETS, exist_ok=True)
     img.save(LOCAL_PNG)
-    print("已缓存源图：", LOCAL_PNG)
+    print("已写入源图：", LOCAL_PNG)
     return img
 
 
@@ -132,7 +132,14 @@ def write_ico(src: Image.Image, out_path: str, sizes) -> None:
 
 
 def main() -> None:
-    src = load_source()
+    parser = argparse.ArgumentParser(description="生成 cursorAdmin 图标")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="忽略已有 assets/icon-1024.png，重新生成 CA 字标",
+    )
+    args = parser.parse_args()
+    src = load_source(force=args.force)
     out = os.path.join(ROOT, "icon.ico")
     write_ico(src, out, ICON_SIZES)
     print("icon.ico created (BMP frames) ->", out)

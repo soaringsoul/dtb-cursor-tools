@@ -10,7 +10,7 @@ import threading
 import time
 
 QUIT_TITLE = "退出确认"
-QUIT_MESSAGE = "确定关闭 cursor账号管理器？"
+QUIT_MESSAGE = "确定关闭 cursorAdmin？"
 QUIT_OK = "关闭应用"
 QUIT_CANCEL = "取消"
 
