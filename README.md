@@ -1,6 +1,6 @@
 # cursor账号管理器
 
-作者：**夜雨微寒**。当前版本见 `sand_patch.py` 里的 `TOOL_VERSION`（打包文件名也用这个号）。
+作者：**夜雨微寒**。当前版本见 `app/sand_patch.py` 里的 `TOOL_VERSION`（打包文件名也用这个号）。
 
 本机桌面工具，用来管理自己的 Cursor 登录票：导入、验证额度与订阅、切到本机 Cursor、查看并踢掉云端登录设备、给指定账号做本机设备保护。界面是 pywebview 窗口，数据只留在运行它的这台电脑上。
 
@@ -26,10 +26,10 @@
 
 - **导入**：粘贴文本，或选 `cursor_accounts_*.json`。支持裸 JWT（`eyJ...`）、`user_01XXXX::eyJ...`（WorkosCursorSessionToken），以及 `邮箱----token`。按 user id 去重，重复导入不覆盖首次导入时间。
 - **导入后自动验证**（可关）：只读查询邮箱、套餐、订阅到期、Bot / Auto / 高级 用量和云端会话，不领取。
-- **探测本机账号**：读取本机 Cursor 当前登录的号。该号在按导入时间排序时固定在最上面；按订阅到期时间排序时不置顶，以免打乱时间顺序。
+- **探测本机账号**：读取本机 Cursor 当前登录的号。该号在列表中始终置顶（浅蓝行 +「本机登录中」）；其余按当前表头排序。
 - **筛选**：付费账户、Free、本机、保护中、失效、即将到期（7 天内）、Bot 用尽、需绑卡。可与「我的分类」同时生效。
 - **我的分类**：自定义标签，一个账号可打多个。分类存在本机设置里，换 token 不会丢掉已打的标签。
-- **排序**：默认按订阅到期时间升序（更早到期的在前）。点工具栏「时间」或表头「订阅到期」切换降序。点「账号 / 邮箱」按导入时间（新的在前），点额度列按 Bot 周用量。
+- **排序**：本机当前登录固定在最上面。其余默认按订阅到期时间升序（更早到期的在前）。点工具栏「时间」或表头「订阅到期」切换降序。点「账号 / 邮箱」按导入时间（新的在前），点额度列按 Bot 周用量。
 - **套餐**：显示在邮箱右侧，不再单独占一列。
 - **订阅到期**：优先显示待取消日，否则显示本计费周期结束。附带自动续费 / 到期不续、剩余时间、月付或年付，以及 token 本身的「登录至」。
 - **额度**：Bot 周、Auto 月、高级 月、超额（按量，进度按 $20 画，接口不提供封顶）。付费套餐自带 Sand 时，验证后会显示「已开通bot」，这不是领取动作。
@@ -85,22 +85,22 @@
 
 ```bash
 python3 -m pip install -r requirements.txt
-python3 app.py
+python3 -m app
 ```
 
 macOS 也可以：
 
 ```bash
 python3 -m pip install -r requirements-mac.txt
-python3 app.py
+python3 -m app
 ```
 
-仓库里若有 `install-mac.command` / `start-mac.command`，双击即可。首次若被系统拦截，在 Finder 里对该文件选右键 → 打开。
+macOS 也可双击 `script/install-mac.command`（首次装依赖），之后双击 `script/start-mac.command`。Windows 双击 `script/启动.bat`。首次若被系统拦截，在 Finder 里对该文件选右键 → 打开。
 
 只看界面、不连 Cursor、不用桌面 WebView：
 
 ```bash
-python3 preview_server.py --port 43147
+python3 -m app.preview_server --port 43147
 ```
 
 浏览器打开 `http://127.0.0.1:43147/`。这是演示数据，不能用来切号或踢设备。
@@ -115,7 +115,7 @@ python3 preview_server.py --port 43147
 python3 -m unittest discover -s tests -t .
 ```
 
-`preview_server.py` 只给界面预览，不要把它算进发布物。
+`app/preview_server.py` 只给界面预览，不要把它算进发布物。
 
 ## 数据放在哪
 
@@ -147,7 +147,7 @@ python3 -m unittest discover -s tests -t .
 build_win.bat
 ```
 
-得到 `nuitka-out\SandClaimer-<版本>.exe`。若本机有 Inno Setup 6，还会得到安装向导。`build.bat` 会转去调用 `build_win.bat`。
+得到 `nuitka-out\SandClaimer-<版本>.exe`。若本机有 Inno Setup 6，还会得到安装向导。
 
 **macOS**（必须在 Mac 上，系统自带 bash 3.2 即可）：
 
@@ -162,18 +162,20 @@ Nuitka 把 Python 编成原生可执行文件，启动比把 `.pyc` 打进去的
 ## 目录
 
 ```
-app.py              窗口入口，以及网页调用的本机接口
+app/                Python 应用（python -m app）
+  desktop.py        窗口入口，以及网页调用的本机接口
+  accounts.py       导入、去重、账号落盘
+  sand_api.py       只读额度/订阅/会话，以及领取、踢下线
+  browser_login.py  隔离浏览器，注入该号的登录 cookie
+  device_guard.py   本机保护的后台循环
+  local_cursor.py   读写本机 Cursor 登录库（切号）
+  grok_bot.py       写入 Grok Bot 账户
+  ops_ui.py         列表筛选、排序、导出分组（与界面同一套规则）
+  resolve.py        用 DNS over HTTPS 解析 cursor.com，避免本机错误 DNS
+  sand_patch.py     版本号，以及定位 / 开关本机 Cursor
+  preview_server.py 浏览器里预览界面
 web/                界面（index.html、style.css、app.js）
-accounts.py         导入、去重、账号落盘
-sand_api.py         只读额度/订阅/会话，以及领取、踢下线
-browser_login.py    隔离浏览器，注入该号的登录 cookie
-device_guard.py     本机保护的后台循环
-local_cursor.py     读写本机 Cursor 登录库（切号）
-login_bot.py        写入 Grok Bot 账户
-ops_ui.py           列表筛选、排序、导出分组（与界面同一套规则）
-resolve.py          用 DNS over HTTPS 解析 cursor.com，避免本机错误 DNS
-sand_patch.py       版本号，以及定位 / 开关本机 Cursor
-preview_server.py   浏览器里预览界面
+script/             启动脚本；make_icon.py / patch_plugin.py 给 Windows 打包用
 build_mac.sh        macOS 打包
 build_win.bat       Windows 打包
 tests/              单元测试
@@ -191,7 +193,7 @@ tests/              单元测试
 1. 选定许可证并提交 `LICENSE`。本仓库目前**没有**许可证文件；没有许可证时，别人默认不能随意复制或再分发。
 2. 确认提交内容里没有 `accounts.json`、`status.json`、导出 txt、真实 token、API Key。
 3. 不要提交 `nuitka-out/`、`.nuitka_venv/`、`*.dmg`（已在 `.gitignore`）。
-4. 用一份干净克隆跑一遍 `python3 app.py` 和单元测试，确认不依赖你机器上的私有路径。
+4. 用一份干净克隆跑一遍 `python3 -m app` 和单元测试，确认不依赖你机器上的私有路径。
 
 ## 界面约定（给改 UI 的人）
 

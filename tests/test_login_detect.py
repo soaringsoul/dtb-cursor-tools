@@ -2,7 +2,7 @@
 
 import unittest
 
-import login_detect
+from app import login_detect
 
 
 NOW = 1_778_227_200_000  # 2026-05-08T00:00:00Z 任意固定点

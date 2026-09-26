@@ -6,7 +6,7 @@ Cocoa 上 windowShouldClose 跑在 GUI 主线程；evaluate_js / create_confirma
 
 import unittest
 
-import quit_confirm
+from app import quit_confirm
 
 
 class ClosingActionTest(unittest.TestCase):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import sand_patch
+from app import sand_patch
 
 APP_NAME = "cursor账号管理器"
 EXPIRING_MS = 7 * 24 * 3600 * 1000
@@ -184,8 +184,59 @@ def claim_visible(state):
     return not (state and state.get("kind") == "ok")
 
 
+def row_main_actions(account=None, state=None, token_on=False, busy=False, guarding=False, kicked_count=0):
+    """账号行操作区文字按钮。与 web/app.js rowMainActions 保持一致。"""
+    account = account or {}
+    web_tok = str(account.get("tokenType") or "").lower() == "web"
+    dis = bool(busy)
+    return [
+        {"act": "verify", "label": "验证", "title": "验证有效性并刷新用量 / 订阅", "disabled": dis},
+        {
+            "act": "switch",
+            "label": "切号",
+            "title": "网站会话：切号时自动换客户端登录票（稍慢几秒）" if web_tok else "切到本机 Cursor",
+            "disabled": dis,
+        },
+        {
+            "act": "loginBot",
+            "label": "登录 Bot",
+            "title": (
+                "网站会话：先换客户端票，再写入 Grok Bot 的 Cursor 账户并切换（不关 Cursor）"
+                if web_tok
+                else "写入 Grok Bot 自带账户列表并切换（不关 Cursor）"
+            ),
+            "disabled": dis,
+        },
+        {"act": "devices", "label": "查看设备", "title": "实时查看云端登录设备，可踢下线（成功后应立刻从列表消失）"},
+        {
+            "act": "guard",
+            "label": "本机保护",
+            "cls": "guard guarding" if guarding else "guard",
+            "title": (
+                f"打开本机保护页（运行中：已踢 {kicked_count} 台）。停止保护在该页里操作"
+                if guarding
+                else "打开本机保护页：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备"
+            ),
+        },
+        {"act": "dashboard", "label": "进控制台", "title": "用该账号登录态打开隔离浏览器到 Cursor 控制台"},
+        {
+            "act": "showToken",
+            "label": "隐藏 Token" if token_on else "显示 Token",
+            "cls": "token on" if token_on else "token",
+            "title": "隐藏这一行的 Token" if token_on else "显示这一行的 Worksession / Refresh token",
+        },
+        {
+            "act": "copy",
+            "label": "复制 Token",
+            "cls": "copy",
+            "title": "复制：邮箱----user_id::token",
+            "disabled": dis,
+        },
+    ]
+
+
 def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
-    """账号行图标：显示 Token / 复制 / 网页领取 / 领取 / 移除。与 web/app.js 保持一致。"""
+    """账号行图标：网页领取 / 领取 / 移除。与 web/app.js 保持一致。"""
     account = account or {}
     has_refresh = bool(account.get("hasRefresh"))
     dis = bool(busy)
@@ -194,18 +245,6 @@ def ticket_menu_groups(account=None, state=None, token_on=False, busy=False):
         pills.append("Token 已展开")
 
     view = [
-        {
-            "act": "showToken",
-            "label": "隐藏 Token" if token_on else "显示 Token",
-            "title": "显示或隐藏 Worksession / Refresh token",
-            "keepOpen": True,
-        },
-        {
-            "act": "copy",
-            "label": "复制",
-            "title": "复制：邮箱----user_id::token",
-            "disabled": dis,
-        },
         {
             "act": "browser",
             "label": "网页领取",
@@ -280,8 +319,6 @@ def sort_rows(rows, sort_by="remain", now_ms=0, local_user_id=None, descending=F
             return (1, 0)
 
     def pin_rank(r):
-        if sort_by == "remain":
-            return 1
         aid = str(r.get("id") or (r.get("account") or {}).get("id") or "")
         return 0 if local_user_id and aid == str(local_user_id) else 1
 

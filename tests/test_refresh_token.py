@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-import accounts
-import sand_api
+from app import accounts
+from app import sand_api
 
 
 def _jwt(sub="user_01TESTREFRESH00000000000", typ="session", exp=1893456000, time=None):
@@ -147,8 +147,8 @@ class RefreshLoginDropsOldToolSessionTest(unittest.TestCase):
     NEW_ISO = "2026-09-16T14:42:11.000Z"
 
     def setUp(self):
-        import app
-        import login_detect
+        import app.desktop as app
+        from app import login_detect
 
         self.app = app
         self.old_time = login_detect.created_at_ms(self.OLD_ISO) // 1000

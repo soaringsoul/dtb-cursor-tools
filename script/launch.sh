@@ -1,12 +1,12 @@
 #!/bin/bash
 # cursor账号管理器 · 用本目录 venv 启动
 # 用法：
-#   ./launch.sh              启动桌面应用
-#   ./launch.sh start        同上
-#   ./launch.sh preview      浏览器预览（演示数据，默认 43147）
-#   ./launch.sh preview 8080 指定端口预览
+#   ./script/launch.sh              启动桌面应用
+#   ./script/launch.sh start        同上
+#   ./script/launch.sh preview      浏览器预览（演示数据，默认 43147）
+#   ./script/launch.sh preview 8080 指定端口预览
 set -euo pipefail
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "$0")/.." || exit 1
 
 VENV="./venv"
 PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -54,10 +54,10 @@ ensure_venv() {
 usage() {
   cat <<'EOF'
 用法:
-  ./launch.sh              启动桌面应用
-  ./launch.sh start        同上
-  ./launch.sh preview      浏览器预览（演示数据，默认端口 43147）
-  ./launch.sh preview 8080 指定端口预览
+  ./script/launch.sh              启动桌面应用
+  ./script/launch.sh start        同上
+  ./script/launch.sh preview      浏览器预览（演示数据，默认端口 43147）
+  ./script/launch.sh preview 8080 指定端口预览
 EOF
 }
 
@@ -66,13 +66,13 @@ case "$CMD" in
   start|run)
     ensure_venv
     echo "启动 cursor账号管理器 …（关闭窗口即退出）"
-    exec "$VENV/bin/python" app.py
+    exec "$VENV/bin/python" -m app
     ;;
   preview)
     ensure_venv
     PORT="${2:-43147}"
     echo "预览 http://127.0.0.1:${PORT}/  （演示数据，Ctrl+C 退出）"
-    exec "$VENV/bin/python" preview_server.py --port "$PORT"
+    exec "$VENV/bin/python" -m app.preview_server --port "$PORT"
     ;;
   -h|--help|help)
     usage

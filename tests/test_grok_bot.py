@@ -23,7 +23,7 @@ REFRESH = _jwt(sub="auth0|" + AID, typ="refresh")
 
 class AccountScopeTest(unittest.TestCase):
     def test_hashes_jwt_sub_as_sha256_hex(self):
-        import grok_bot
+        from app import grok_bot
 
         sub = "auth0|" + AID
         self.assertEqual(
@@ -32,7 +32,7 @@ class AccountScopeTest(unittest.TestCase):
         )
 
     def test_falls_back_to_raw_token_when_sub_missing(self):
-        import grok_bot
+        from app import grok_bot
 
         raw = "not-a-jwt"
         self.assertEqual(
@@ -43,7 +43,7 @@ class AccountScopeTest(unittest.TestCase):
 
 class PlaintextWrapTest(unittest.TestCase):
     def test_prefix_and_roundtrip(self):
-        import grok_bot
+        from app import grok_bot
 
         wrapped = grok_bot.wrap_plaintext("hello-token")
         self.assertTrue(wrapped.startswith("plaintext:v1:"))
@@ -54,7 +54,7 @@ class PlaintextWrapTest(unittest.TestCase):
 
 class UserDataDirTest(unittest.TestCase):
     def test_darwin_is_application_support_grok_bot(self):
-        import grok_bot
+        from app import grok_bot
 
         with patch.object(grok_bot.sys, "platform", "darwin"):
             path = grok_bot.user_data_dir()
@@ -63,7 +63,7 @@ class UserDataDirTest(unittest.TestCase):
         self.assertNotIn("/Cursor/", str(path).replace("\\", "/") + "/")
 
     def test_win32_is_appdata_grok_bot(self):
-        import grok_bot
+        from app import grok_bot
 
         with (
             patch.object(grok_bot.sys, "platform", "win32"),
@@ -76,7 +76,7 @@ class UserDataDirTest(unittest.TestCase):
 
 class OscryptTest(unittest.TestCase):
     def test_v10_roundtrip_matches_electron_safe_storage(self):
-        import grok_bot
+        from app import grok_bot
 
         blob = grok_bot.oscrypt_encrypt("hello-token", "unit-test-key")
         raw = base64.b64decode(blob)
@@ -92,7 +92,7 @@ class WriteSecretsTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def _write(self, **kwargs):
-        import grok_bot
+        from app import grok_bot
 
         with (
             patch.object(grok_bot, "user_data_dir", return_value=self.root),
@@ -111,7 +111,7 @@ class WriteSecretsTest(unittest.TestCase):
         return json.loads(data["cursor-accounts"])
 
     def test_write_sets_active_encrypted_tokens_not_plaintext(self):
-        import grok_bot
+        from app import grok_bot
 
         self._write()
         rec = self._accounts()
@@ -136,7 +136,7 @@ class WriteSecretsTest(unittest.TestCase):
         self.assertEqual(profile.get("email"), "a@b.com")
 
     def test_write_keeps_other_accounts_and_machine_id(self):
-        import grok_bot
+        from app import grok_bot
 
         old_scope = "a" * 64
         seed = {
@@ -163,7 +163,7 @@ class WriteSecretsTest(unittest.TestCase):
         self.assertEqual(rec["active"], grok_bot.account_scope(ACCESS))
 
     def test_write_account_slot_blob(self):
-        import grok_bot
+        from app import grok_bot
 
         pers = self.root / "sand-client-persistence"
         pers.mkdir()
@@ -175,7 +175,7 @@ class WriteSecretsTest(unittest.TestCase):
         self.assertEqual(payload["value"], "auth0|" + AID)
 
     def test_does_not_touch_cursor_vscdb(self):
-        import grok_bot
+        from app import grok_bot
 
         cursor_root = self.root / "Cursor" / "User" / "globalStorage"
         cursor_root.mkdir(parents=True)
@@ -184,7 +184,7 @@ class WriteSecretsTest(unittest.TestCase):
         with (
             patch.object(grok_bot, "user_data_dir", return_value=self.root / "Grok Bot"),
             patch.object(grok_bot, "_safe_storage_password", return_value="unit-test-key"),
-            patch("local_cursor.write_local_account") as cursor_write,
+            patch("app.local_cursor.write_local_account") as cursor_write,
         ):
             (self.root / "Grok Bot").mkdir()
             grok_bot.write_local_account(ACCESS, REFRESH, email="a@b.com")
@@ -192,7 +192,7 @@ class WriteSecretsTest(unittest.TestCase):
         self.assertEqual(vscdb.read_text(encoding="utf-8"), "cursor-db")
 
     def test_encrypt_unavailable_uses_toplevel_plaintext_and_drops_nested_slot(self):
-        import grok_bot
+        from app import grok_bot
 
         scope = grok_bot.account_scope(ACCESS)
         seed = {
@@ -223,7 +223,7 @@ class WriteSecretsTest(unittest.TestCase):
         self.assertNotIn(scope, rec["accounts"])
 
     def test_wrong_key_falls_back_and_keeps_existing_accounts(self):
-        import grok_bot
+        from app import grok_bot
 
         old_scope = "b" * 64
         good = grok_bot.oscrypt_encrypt("old-token", "real-key")
@@ -257,7 +257,7 @@ class WriteSecretsTest(unittest.TestCase):
 
 class FindAndStartTest(unittest.TestCase):
     def test_find_app_darwin_applications(self):
-        import grok_bot
+        from app import grok_bot
 
         fake = Path("/Applications/Grok Bot.app")
         with (
@@ -268,7 +268,7 @@ class FindAndStartTest(unittest.TestCase):
         self.assertEqual(found, fake)
 
     def test_darwin_start_opens_grok_bot_not_cursor(self):
-        import grok_bot
+        from app import grok_bot
 
         fake = Path("/Applications/Grok Bot.app")
         with (
@@ -284,7 +284,7 @@ class FindAndStartTest(unittest.TestCase):
         self.assertNotIn("--classic", cmd)
 
     def test_windows_registry_text_yields_exe_path(self):
-        import grok_bot
+        from app import grok_bot
 
         text = (
             "    InstallLocation    REG_SZ    C:\\Users\\me\\AppData\\Local\\Programs\\Grok Bot\n"
@@ -297,7 +297,7 @@ class FindAndStartTest(unittest.TestCase):
         )
 
     def test_find_app_windows_uses_install_search(self):
-        import grok_bot
+        from app import grok_bot
 
         exe = Path(r"D:\Apps\Grok Bot\Grok Bot.exe")
         with (
@@ -307,7 +307,7 @@ class FindAndStartTest(unittest.TestCase):
             self.assertEqual(grok_bot.find_app(), exe)
 
     def test_missing_message_on_windows_names_exe(self):
-        import grok_bot
+        from app import grok_bot
 
         with patch.object(grok_bot.sys, "platform", "win32"):
             text = grok_bot.missing_app_message()
@@ -315,7 +315,7 @@ class FindAndStartTest(unittest.TestCase):
         self.assertNotIn("/Applications", text)
 
     def test_start_without_app_raises(self):
-        import grok_bot
+        from app import grok_bot
 
         with patch.object(grok_bot, "find_app", return_value=None):
             with self.assertRaises(grok_bot.GrokBotError):
@@ -324,7 +324,7 @@ class FindAndStartTest(unittest.TestCase):
 
 class DetectLoginUrlTest(unittest.TestCase):
     def test_parses_osascript_stdout(self):
-        import grok_bot
+        from app import grok_bot
 
         url = (
             "https://cursor.com/loginDeepControl?challenge=abc&uuid=def"
@@ -341,7 +341,7 @@ class DetectLoginUrlTest(unittest.TestCase):
             self.assertEqual(grok_bot.detect_login_deep_url(), url)
 
     def test_ignores_unrelated_browser_url(self):
-        import grok_bot
+        from app import grok_bot
 
         with (
             patch.object(grok_bot.sys, "platform", "darwin"),
@@ -358,7 +358,7 @@ class DetectLoginUrlTest(unittest.TestCase):
 
 class CloseGrokBotTest(unittest.TestCase):
     def test_darwin_quit_uses_bundle_id_not_cursor(self):
-        import grok_bot
+        from app import grok_bot
 
         with (
             patch.object(grok_bot.sys, "platform", "darwin"),

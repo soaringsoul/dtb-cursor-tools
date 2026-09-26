@@ -20,7 +20,7 @@ NEW = _jwt(exp=1999999999)
 
 class SwitchAccountRefreshFirstTest(unittest.TestCase):
     def setUp(self):
-        import app
+        import app.desktop as app
 
         self.app = app
         self.api = app.Api.__new__(app.Api)

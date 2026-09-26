@@ -15,8 +15,8 @@ import struct
 
 from PIL import Image, ImageDraw
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ASSETS = os.path.join(HERE, "assets")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ASSETS = os.path.join(ROOT, "assets")
 LOCAL_PNG = os.path.join(ASSETS, "icon-1024.png")
 ICON_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
@@ -133,7 +133,7 @@ def write_ico(src: Image.Image, out_path: str, sizes) -> None:
 
 def main() -> None:
     src = load_source()
-    out = os.path.join(HERE, "icon.ico")
+    out = os.path.join(ROOT, "icon.ico")
     write_ico(src, out, ICON_SIZES)
     print("icon.ico created (BMP frames) ->", out)
 

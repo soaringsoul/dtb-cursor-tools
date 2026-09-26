@@ -4,8 +4,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-import browser_login
-import sand_api
+from app import browser_login
+from app import sand_api
 from tests.test_login_sessions import SAMPLE
 from tests.test_login_sessions import _jwt
 

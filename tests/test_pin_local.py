@@ -3,8 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-import app
-import login_detect
+import app.desktop as app
+from app import login_detect
 
 
 AID = "user_01PINLOCAL00000000000000000"
@@ -112,7 +112,7 @@ class PinLocalHelperSanityTest(unittest.TestCase):
 
 class PreviewPinLocalTest(unittest.TestCase):
     def setUp(self):
-        import preview_server as ps
+        from app import preview_server as ps
 
         self.ps = ps
         with ps._LOCK:

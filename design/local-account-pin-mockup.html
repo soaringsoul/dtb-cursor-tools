@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>设计稿 · 本机账号置顶与行强调</title>
+  <style>
+    :root {
+      --brand: #fa8c16;
+      --ink: rgba(0, 0, 0, 0.88);
+      --ink-secondary: rgba(0, 0, 0, 0.65);
+      --muted: rgba(0, 0, 0, 0.45);
+      --line: #f0f0f0;
+      --border: #d9d9d9;
+      --surface: #ffffff;
+      --surface-soft: #fafafa;
+      --layout-bg: #f5f5f5;
+      --success: #52c41a;
+      --success-dark: #389e0d;
+      --success-bg: #f6ffed;
+      --success-line: #b7eb8f;
+      --info: #1677ff;
+      --info-dark: #0958d9;
+      --info-bg: #e6f4ff;
+      --info-line: #91caff;
+      --warning-bg: #fffbe6;
+      --warning-line: #ffe58f;
+      --warning-dark: #d48806;
+      --danger-bg: #fff2f0;
+      --viz-4: #722ed1;
+      --radius-tag: 4px;
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --control-h-sm: 24px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 24px 64px;
+      font: 14px/1.57 var(--font);
+      color: var(--ink);
+      background: var(--layout-bg);
+    }
+    .page { max-width: 1180px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+    .lead { margin: 0 0 28px; color: var(--ink-secondary); max-width: 64ch; }
+    .section { margin-bottom: 36px; }
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: var(--radius-tag);
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid;
+    }
+    .badge.now { color: #cf1322; background: var(--danger-bg); border-color: #ffccc7; }
+    .badge.prop { color: var(--success-dark); background: var(--success-bg); border-color: var(--success-line); }
+    .note {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      color: var(--ink-secondary);
+      font-size: 13px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0,0,0,.03);
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-soft);
+      font-size: 13px;
+      color: var(--ink-secondary);
+    }
+    .toolbar strong { color: var(--ink); font-weight: 600; }
+    .sort-chip {
+      margin-left: auto;
+      padding: 2px 8px;
+      border-radius: var(--radius-tag);
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 12px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th {
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      background: var(--surface-soft);
+      border-bottom: 1px solid var(--line);
+    }
+    td {
+      padding: 12px;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    th:nth-child(1), td:nth-child(1) { width: 42%; }
+    th:nth-child(2), td:nth-child(2) { width: 22%; }
+    th:nth-child(3), td:nth-child(3) { width: 20%; }
+    th:nth-child(4), td:nth-child(4) { width: 16%; text-align: right; }
+    .acct { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+    .avatar {
+      flex: none;
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: 600;
+      color: var(--success-dark);
+      background: var(--success-bg);
+      border: 1px solid var(--success-line);
+    }
+    .mail {
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mail-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .uid { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; margin-top: 2px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 22px; padding: 0 8px;
+      border-radius: var(--radius-tag);
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 12px; color: var(--ink-secondary);
+    }
+    .pill.mini { height: 20px; padding: 0 6px; font-size: 11px; }
+    .pill.info { color: var(--info-dark); background: var(--info-bg); border-color: var(--info-line); }
+    .pill.ok { color: var(--success-dark); background: var(--success-bg); border-color: var(--success-line); }
+    .pill.warn { color: var(--warning-dark); background: var(--warning-bg); border-color: var(--warning-line); }
+    .exp {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: var(--radius-tag);
+      background: #fff1f0;
+      color: #cf1322;
+      font-variant-numeric: tabular-nums;
+    }
+    .exp.ok { background: var(--success-bg); color: var(--success-dark); }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .act {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      width: 120px;
+      margin-left: auto;
+    }
+    .act .btn {
+      height: var(--control-h-sm);
+      padding: 0 4px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: #fff;
+      font-size: 12px;
+      color: var(--ink-secondary);
+      cursor: default;
+    }
+    .act .btn.guard { color: var(--viz-4); border-color: #d3adf7; }
+
+    tr.is-local td {
+      background: var(--info-bg);
+      box-shadow: inset 3px 0 0 var(--info);
+    }
+    tr.is-local {
+      box-shadow: 0 1px 0 0 var(--info-line);
+    }
+    .pill.local-now {
+      color: var(--success-dark);
+      background: var(--success-bg);
+      border-color: var(--success-line);
+      font-weight: 600;
+      height: 24px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .pill.local-now::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 2px rgba(82, 196, 26, 0.25);
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 28px;
+    }
+    .legend article {
+      padding: 14px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+    .legend h3 { margin: 0 0 6px; font-size: 13px; }
+    .legend p { margin: 0; font-size: 12px; color: var(--ink-secondary); }
+    .callout {
+      margin-top: 20px;
+      padding: 14px 16px;
+      border-left: 3px solid var(--brand);
+      background: #fff7e6;
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      font-size: 13px;
+    }
+    .callout strong { color: var(--brand); }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>本机账号 · 置顶与行强调</h1>
+    <p class="lead">
+      设计稿（静态预览）。默认仍按「订阅到期」升序排其余号；本机 Cursor 当前登录号始终钉在第 1 行，并用左边条 + 浅蓝底 +「本机登录中」标签强化辨识。
+    </p>
+
+    <section class="section">
+      <h2><span class="badge now">现状</span> 到期排序不置顶 · 小号蓝标签</h2>
+      <p class="note">本机号到期更晚时会沉到列表中下部；仅靠迷你「本机」蓝标，扫一眼容易漏。</p>
+      <div class="card">
+        <div class="toolbar">
+          <strong>账号列表</strong> · 3 个
+          <span class="sort-chip">排序：订阅到期 ↑</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>账号 / 邮箱</th>
+              <th>订阅到期</th>
+              <th>额度</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="acct">
+                  <span class="avatar">S</span>
+                  <div>
+                    <div class="mail-line"><span class="mail">soon-expire@example.com</span><span class="pill info mini">Pro</span></div>
+                    <div class="uid">user_01SOON…</div>
+                    <div class="tags">
+                      <span class="pill ok mini">有效</span>
+                      <span class="pill info mini">2 设备 · 客户端1 / 网页1</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="exp">2026-09-27 09:37</span><div class="hint">剩 20 小时</div></td>
+              <td><div class="hint">Bot 82% · Auto 12%</div></td>
+              <td><div class="act"><span class="btn">验证</span><span class="btn">切号</span></div></td>
+            </tr>
+            <tr>
+              <td>
+                <div class="acct">
+                  <span class="avatar">M</span>
+                  <div>
+                    <div class="mail-line"><span class="mail">mid-expire@example.com</span><span class="pill info mini">Pro</span></div>
+                    <div class="uid">user_01MID…</div>
+                    <div class="tags"><span class="pill ok mini">有效</span></div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="exp ok">2026-10-05 12:00</span><div class="hint">剩 9 天</div></td>
+              <td><div class="hint">Bot 40% · Auto 8%</div></td>
+              <td><div class="act"><span class="btn">验证</span><span class="btn">切号</span></div></td>
+            </tr>
+            <tr>
+              <td>
+                <div class="acct">
+                  <span class="avatar">A</span>
+                  <div>
+                    <div class="mail-line">
+                      <span class="mail">allyssadutto53446@outlook.com</span>
+                      <span class="pill info mini">Pro</span>
+                      <span class="pill info mini">本机</span>
+                    </div>
+                    <div class="uid">user_01LOCAL…</div>
+                    <div class="tags">
+                      <span class="pill ok mini">有效</span>
+                      <span class="pill info mini">14 设备 · 客户端12 / 网页2</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="exp ok">2026-10-25 22:54</span><div class="hint">剩 29 天</div></td>
+              <td><div class="hint">Bot 61% · Auto 3%</div></td>
+              <td><div class="act"><span class="btn">验证</span><span class="btn">切号</span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2><span class="badge prop">方案</span> 全排序置顶 · 行级强调</h2>
+      <p class="note">本机行固定第 1；其余仍按到期升序（soon → mid）。到期日期照常显示，不假装它最早到期。</p>
+      <div class="card">
+        <div class="toolbar">
+          <strong>账号列表</strong> · 3 个
+          <span class="sort-chip">排序：订阅到期 ↑ · 本机置顶</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>账号 / 邮箱</th>
+              <th>订阅到期</th>
+              <th>额度</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="is-local">
+              <td>
+                <div class="acct">
+                  <span class="avatar">A</span>
+                  <div>
+                    <div class="mail-line">
+                      <span class="mail">allyssadutto53446@outlook.com</span>
+                      <span class="pill info mini">Pro</span>
+                      <span class="pill local-now" title="本机 Cursor 当前登录的是这个号">本机登录中</span>
+                    </div>
+                    <div class="uid">user_01LOCAL…</div>
+                    <div class="tags">
+                      <span class="pill ok mini">有效</span>
+                      <span class="pill info mini">14 设备 · 客户端12 / 网页2</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="exp ok">2026-10-25 22:54</span><div class="hint">剩 29 天 · 不参与到期序</div></td>
+              <td><div class="hint">Bot 61% · Auto 3%</div></td>
+              <td>
+                <div class="act">
+                  <span class="btn">验证</span><span class="btn">切号</span>
+                  <span class="btn guard">本机保护</span><span class="btn">进控制台</span>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="acct">
+                  <span class="avatar">S</span>
+                  <div>
+                    <div class="mail-line"><span class="mail">soon-expire@example.com</span><span class="pill info mini">Pro</span></div>
+                    <div class="uid">user_01SOON…</div>
+                    <div class="tags">
+                      <span class="pill ok mini">有效</span>
+                      <span class="pill info mini">2 设备 · 客户端1 / 网页1</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="exp">2026-09-27 09:37</span><div class="hint">剩 20 小时</div></td>
+              <td><div class="hint">Bot 82% · Auto 12%</div></td>
+              <td><div class="act"><span class="btn">验证</span><span class="btn">切号</span></div></td>
+            </tr>
+            <tr>
+              <td>
+                <div class="acct">
+                  <span class="avatar">M</span>
+                  <div>
+                    <div class="mail-line"><span class="mail">mid-expire@example.com</span><span class="pill info mini">Pro</span></div>
+                    <div class="uid">user_01MID…</div>
+                    <div class="tags"><span class="pill ok mini">有效</span></div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="exp ok">2026-10-05 12:00</span><div class="hint">剩 9 天</div></td>
+              <td><div class="hint">Bot 40% · Auto 8%</div></td>
+              <td><div class="act"><span class="btn">验证</span><span class="btn">切号</span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="legend">
+      <article>
+        <h3>1. 置顶规则</h3>
+        <p>任意表头（到期 / Bot / 导入）下，本机号都是第 1 行。其余行按当前键排序。</p>
+      </article>
+      <article>
+        <h3>2. 左边条 + 浅蓝底</h3>
+        <p><code>tr.is-local</code>：inset 3px info 色条 + <code>--info-bg</code>，一眼锁定「当前 IDE」。</p>
+      </article>
+      <article>
+        <h3>3. 「本机登录中」</h3>
+        <p>非 mini、绿色 ok 标签 + 状态点，跟在邮箱后；与设备列表里绿色「本机」语义一致。</p>
+      </article>
+    </div>
+
+    <div class="callout">
+      <strong>可调点（看完告诉我）：</strong>
+      ① 行底用浅蓝（info）还是浅绿（success）？
+      ② 标签文案用「本机登录中」还是更短的「本机」？
+      ③ 到期列副文案「不参与到期序」要不要落地（设计稿示意，计划默认不加）？
+    </div>
+  </div>
+</body>
+</html>

@@ -1,10 +1,10 @@
 """Browser preview of the SandClaimer UI with a mock pywebview bridge.
 
-The real app is `python3 app.py` (pywebview). This server only exists so the
+The real app is `python3 -m app` (pywebview). This server only exists so the
 glass UI — including 进控制台 / 查看设备 / 本机保护 — can be clicked in a
 normal browser without a desktop WebView.
 
-  python3 preview_server.py --port 43147
+  python3 -m app.preview_server --port 43147
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-import accounts
-import api_key_store
-import login_detect
-import sand_api
+from app import accounts
+from app import api_key_store
+from app import login_detect
+from app import sand_api
 
-WEB = Path(__file__).resolve().parent / "web"
+WEB = Path(__file__).resolve().parents[1] / "web"
 
 DEMO_ID = "user_01ANITAREID331200000000000"
 DEMO_EMAIL = "anitareid3312@outlook.com"
@@ -379,7 +379,7 @@ def _rpc(method: str, args):
             _ACCOUNT_TAGS[aid] = clean
         return {"ok": True, "tagIds": clean, "accounts": _rpc("list_accounts", [])}
     if method == "app_info":
-        import ops_ui
+        from app import ops_ui
         return ops_ui.app_info()
     if method == "mark_ui_ready":
         return True

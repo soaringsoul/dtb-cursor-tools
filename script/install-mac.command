@@ -1,7 +1,7 @@
 #!/bin/bash
 # cursor账号管理器 · macOS 一键安装依赖
 # 双击若提示“无法打开/未验证的开发者”，右键本文件 → 打开。
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "$0")/.." || exit 1
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "[错误] 没找到 python3。请先从 https://www.python.org/downloads/ 安装 Python 3。"

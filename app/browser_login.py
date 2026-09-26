@@ -26,7 +26,7 @@ import urllib.request
 
 import websocket  # websocket-client
 
-import sand_api
+from app import sand_api
 
 CURSOR_ONBOARDING = "https://cursor.com/bot/onboarding?product=grok-bot"
 CURSOR_DASHBOARD = "https://cursor.com/dashboard"

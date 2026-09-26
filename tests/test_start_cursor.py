@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import sand_patch
+from app import sand_patch
 
 
 class CursorStartArgsTest(unittest.TestCase):

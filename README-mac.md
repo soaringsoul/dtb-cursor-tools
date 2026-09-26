@@ -2,26 +2,26 @@
 
 完整说明（功能、数据目录、打包、公开仓库前要检查的事）见 [README.md](README.md)。
 
-Windows 用户：双击 `启动.bat` 即可，无需看本文件。
+Windows 用户：双击 `script/启动.bat` 即可，无需看本文件。
 
 ## 运行（源码模式，推荐）
 
 1. 装 Python 3（若未装）：https://www.python.org/downloads/
-2. 双击 `install-mac.command`（首次装依赖，需联网）。
+2. 双击 `script/install-mac.command`（首次装依赖，需联网）。
    - 若提示“无法打开、来自身份不明的开发者”：右键该文件 → 打开 → 打开。
-3. 以后双击 `start-mac.command` 启动。
+3. 以后双击 `script/start-mac.command` 启动。
 
 命令行等价：
 
 ```bash
 python3 -m pip install -r requirements-mac.txt
-python3 app.py
+python3 -m app
 ```
 
 ## 切号需要的权限
 
 - 「切号」要写入 Cursor 登录库。首次可能弹出权限请求，允许即可。
-- 若失败，用终端 `sudo python3 app.py` 再试。
+- 若失败，用终端 `sudo python3 -m app` 再试。
 
 ## 一键打包成 .app / .dmg（在 Mac 上做）
 
@@ -32,9 +32,7 @@ chmod +x build_mac.sh
 ./build_mac.sh
 ```
 
-产物：`SandClaimer-<版本>.dmg`（项目根目录，版本取自 `sand_patch.py` 的 `TOOL_VERSION`）。也可用 Finder 双击 `build-mac-nuitka.command`（内部调用同一脚本）。
-
-PyInstaller 备用：双击 `build-mac-app.command`。
+产物：`SandClaimer-<版本>.dmg`（项目根目录，版本取自 `app/sand_patch.py` 的 `TOOL_VERSION`）。
 
 把 `.dmg` 发群，Mac 用户下载 → 打开 → 拖进「应用程序」→ 双击运行（首次右键图标 → 打开绕过 Gatekeeper）。
 

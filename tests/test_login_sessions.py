@@ -5,8 +5,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-import login_detect
-import sand_api
+from app import login_detect
+from app import sand_api
 
 
 def _jwt(sub="user_01TESTSESSIONS000000000000"):

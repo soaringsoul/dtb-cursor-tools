@@ -27,7 +27,7 @@ import re
 import threading
 import time
 
-import sand_api
+from app import sand_api
 
 TICK_SECONDS = 30.0
 DEFAULT_INTERVAL_SECONDS = 30

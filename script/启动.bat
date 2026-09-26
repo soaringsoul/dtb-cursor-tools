@@ -1,5 +1,5 @@
 @echo off
-cd /d "%~dp0"
+cd /d "%~dp0.."
 title Sand �ʸ���ȡ��
 
 set "PY="
@@ -29,7 +29,7 @@ if errorlevel 1 (
 )
 
 echo �������� Sand �ʸ���ȡ������
-%PY% app.py
+%PY% -m app
 
 echo.
 echo �������˳������û�������ڻ��б���������������Ϣ��ͼ�������ߡ�

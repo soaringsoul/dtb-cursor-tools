@@ -8,8 +8,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-import device_guard
-import sand_api
+from app import device_guard
+from app import sand_api
 
 UID = "user_01GUARDTEST0000000000000000"
 JWT = "eyJhbGciOiJub25lIn0.e30.x"

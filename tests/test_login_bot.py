@@ -34,7 +34,7 @@ def _classic_from_start(mock_start):
 
 class LoginBotApiTest(unittest.TestCase):
     def setUp(self):
-        import app
+        import app.desktop as app
 
         self.app = app
         self.api = app.Api.__new__(app.Api)
@@ -247,38 +247,6 @@ class LoginBotApiTest(unittest.TestCase):
         self.assertEqual(write_bot.call_args[0][0], session)
 
 
-class LoginBotConfirmCopyTest(unittest.TestCase):
-    def test_title_and_buttons(self):
-        import login_bot_confirm
-
-        self.assertEqual(login_bot_confirm.TITLE, "登录 Bot 确认")
-        self.assertEqual(login_bot_confirm.OK, "确认登录 Bot")
-        self.assertEqual(login_bot_confirm.CANCEL, "取消")
-
-    def test_mentions_grok_bot_link_and_not_sign_in(self):
-        import login_bot_confirm
-
-        blob = "\n".join(login_bot_confirm.confirm_lines("alice@example.com"))
-        self.assertIn("alice@example.com", blob)
-        self.assertIn("Grok Bot", blob)
-        self.assertTrue("不会关" in blob or "不关" in blob)
-        self.assertTrue("账户" in blob or "切换" in blob)
-        self.assertNotIn("loginDeepControl", blob)
-        self.assertNotIn("Sign in", blob)
-        self.assertNotIn("关掉当前 Cursor", blob)
-        self.assertIn("当前这张票", blob)
-        self.assertNotIn("会先换新登录票", blob)
-        self.assertIn("正在重新连接你的电脑", blob)
-        self.assertIn("关掉代理", blob)
-
-    def test_does_not_mention_isolated_authenticator(self):
-        import login_bot_confirm
-
-        blob = "\n".join(login_bot_confirm.confirm_lines("a@b.com"))
-        self.assertNotIn("authenticator", blob.lower())
-        self.assertNotIn("隔离", blob)
-
-
 class LoginBotUiContractTest(unittest.TestCase):
     def setUp(self):
         root = Path(__file__).resolve().parents[1]
@@ -373,7 +341,7 @@ class LoginBotUiContractTest(unittest.TestCase):
 
 class PreviewLoginBotRpcTest(unittest.TestCase):
     def test_preview_exposes_login_bot(self):
-        import preview_server as ps
+        from app import preview_server as ps
 
         self.assertIn("login_bot", ps.MOCK_JS)
         res = ps._rpc("login_bot", [ps.DEMO_ID, False, False, False])

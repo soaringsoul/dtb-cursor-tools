@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-import accounts
+from app import accounts
 from tests.test_refresh_token import ACCESS, _jwt
 
 

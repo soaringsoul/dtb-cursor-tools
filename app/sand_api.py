@@ -34,7 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-import login_detect
+from app import login_detect
 from urllib.parse import parse_qs, urlparse
 
 SAND_USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"

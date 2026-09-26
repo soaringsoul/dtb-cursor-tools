@@ -18,25 +18,25 @@ import time
 
 import webview
 
-import resolve
-import sand_api
-import sand_patch
-import browser_login
-import device_guard
-import local_cursor
-import grok_bot
-import api_key_store
-from accounts import AccountStore
-from accounts import filter_tag_ids
-from accounts import format_export_line
-import quit_confirm
-import login_detect
-import ops_ui
-from sand_api import claim as claim_token
-from sand_api import get_sand_status
-from sand_api import get_status
-from sand_api import parse_token
-from sand_api import verify as verify_token
+from app import resolve
+from app import sand_api
+from app import sand_patch
+from app import browser_login
+from app import device_guard
+from app import local_cursor
+from app import grok_bot
+from app import api_key_store
+from app.accounts import AccountStore
+from app.accounts import filter_tag_ids
+from app.accounts import format_export_line
+from app import quit_confirm
+from app import login_detect
+from app import ops_ui
+from app.sand_api import claim as claim_token
+from app.sand_api import get_sand_status
+from app.sand_api import get_status
+from app.sand_api import parse_token
+from app.sand_api import verify as verify_token
 
 
 _STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "SandClaimer")
@@ -91,9 +91,14 @@ def _write_json(name: str, data) -> None:
 
 
 def resource_path(rel: str) -> str:
-    """兼容 PyInstaller onefile：优先用解包目录 _MEIPASS。"""
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, rel)
+    """开发时资源在仓库根目录；打包后优先用解包目录。"""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return os.path.join(meipass, rel)
+    if getattr(sys, "frozen", False) or globals().get("__compiled__"):
+        return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), rel)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, rel)
 
 
 def dock_icon_path() -> str:
@@ -1154,6 +1159,16 @@ class Api:
 
     def app_info(self) -> dict:
         return ops_ui.app_info()
+
+    def open_external(self, url: str) -> bool:
+        """只打开标题上的 QQ 群链接，避免网页把窗口导航走。"""
+        target = "https://qm.qq.com/q/POZe1e3WYG"
+        if str(url or "").strip() != target:
+            return False
+        import webbrowser
+
+        webbrowser.open(target)
+        return True
 
     def set_settings(self, data: dict) -> bool:
         _write_json("settings.json", data or {})

@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import api_key_store
-import cloud_agents
+from app import api_key_store
+from app import cloud_agents
 
 
 class ListAgentsTest(unittest.TestCase):
@@ -244,7 +244,7 @@ class ApiKeyStoreTest(unittest.TestCase):
 
 class PreviewRpcTest(unittest.TestCase):
     def setUp(self):
-        import preview_server
+        from app import preview_server
 
         self.ps = preview_server
         with preview_server._LOCK:

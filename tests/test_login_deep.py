@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-import sand_api
+from app import sand_api
 
 SAMPLE = (
     "https://cursor.com/loginDeepControl?challenge=FUDMUY_jFaak3csMHHxhoA4DymZmERvLtWVxkohwrhY"

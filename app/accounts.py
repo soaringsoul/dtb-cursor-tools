@@ -22,7 +22,7 @@ import threading
 import time
 from ctypes import wintypes
 
-from sand_api import parse_token
+from app.sand_api import parse_token
 
 # ws token（含 :: 或 %3A%3A）优先，其次裸 JWT。
 WS_RE = re.compile(r"user_[A-Za-z0-9]+(?:::|%3A%3A)eyJ[A-Za-z0-9_.\-]+")

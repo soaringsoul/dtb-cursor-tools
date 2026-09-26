@@ -3,8 +3,8 @@
 import unittest
 from pathlib import Path
 
-import ops_ui
-import sand_patch
+from app import ops_ui
+from app import sand_patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -142,13 +142,17 @@ class MatchFilterSortTest(unittest.TestCase):
         )
         self.assertEqual([r["id"] for r in ordered], ["me", "new", "old"])
 
-    def test_time_sort_ignores_local_pin(self):
+    def test_time_sort_still_pins_local(self):
         soon = row("soon", state={"billingCycleEndMs": NOW + 86400000})
         local = row("me", state={"billingCycleEndMs": NOW + 9 * 86400000})
         ordered = ops_ui.sort_rows(
             [local, soon], sort_by="remain", now_ms=NOW, local_user_id="me"
         )
-        self.assertEqual([r["id"] for r in ordered], ["soon", "me"])
+        self.assertEqual([r["id"] for r in ordered], ["me", "soon"])
+        desc = ops_ui.sort_rows(
+            [soon, local], sort_by="remain", descending=True, now_ms=NOW, local_user_id="me"
+        )
+        self.assertEqual([r["id"] for r in desc], ["me", "soon"])
 
     def test_sort_remain_puts_soonest_first(self):
         a = row("a", state={"billingCycleEndMs": NOW + 9 * 86400000})
@@ -177,6 +181,9 @@ class HtmlContractTest(unittest.TestCase):
         html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         for needle in (
             'id="appVersion"',
+            'id="qqGroup"',
+            "1056952049",
+            "https://qm.qq.com/q/POZe1e3WYG",
             'id="btnHideNotice"',
             'id="btnEmptyDetect"',
             'id="statExpiring"',
@@ -218,6 +225,14 @@ class HtmlContractTest(unittest.TestCase):
         self.assertIn('listFilter === "paid"', js)
         self.assertIn('listFilter === "free"', js)
         self.assertIn("localUserId && x.a.id === localUserId", js)
+        sort_fn = js.split("function orderedAccounts(", 1)[1].split("function visibleAccounts(", 1)[0]
+        self.assertNotIn('listSort.key !== "remain"', sort_fn)
+        self.assertIn("本机登录中", js)
+        self.assertIn('class="pill local-now"', js)
+        self.assertIn("is-local", js)
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
+        self.assertIn("tbody tr.is-local td", css)
+        self.assertIn(".pill.local-now", css)
 
     def test_ticket_sheet_is_grouped_not_flat_grid(self):
         html = (ROOT / "web/index.html").read_text(encoding="utf-8")
@@ -293,12 +308,19 @@ class TicketMenuGroupsTest(unittest.TestCase):
         view2 = [i["act"] for i in ops_ui.ticket_menu_groups({}, {"kind": "card"})["groups"][0]["items"]]
         self.assertIn("claim", view2)
 
-    def test_token_label_toggles_and_stays_open(self):
-        off = {i["act"]: i for i in ops_ui.ticket_menu_groups({}, token_on=False)["groups"][0]["items"]}
-        on = {i["act"]: i for i in ops_ui.ticket_menu_groups({}, token_on=True)["groups"][0]["items"]}
+    def test_token_actions_live_in_row_main_not_icons(self):
+        acts = [i["act"] for group in ops_ui.ticket_menu_groups({})["groups"] for i in group["items"]]
+        self.assertNotIn("showToken", acts)
+        self.assertNotIn("copy", acts)
+        off = {i["act"]: i for i in ops_ui.row_main_actions(token_on=False)}
+        on = {i["act"]: i for i in ops_ui.row_main_actions(token_on=True)}
         self.assertEqual(off["showToken"]["label"], "显示 Token")
         self.assertEqual(on["showToken"]["label"], "隐藏 Token")
-        self.assertTrue(off["showToken"].get("keepOpen"))
+        self.assertEqual(off["showToken"]["cls"], "token")
+        self.assertEqual(on["showToken"]["cls"], "token on")
+        self.assertEqual(off["copy"]["label"], "复制 Token")
+        self.assertEqual(off["copy"]["cls"], "copy")
+        self.assertFalse(off["showToken"].get("keepOpen"))
 
     def test_pills_show_refresh_state(self):
         has_rt = ops_ui.ticket_menu_groups({"hasRefresh": True})["pills"]
@@ -306,6 +328,26 @@ class TicketMenuGroupsTest(unittest.TestCase):
         self.assertTrue(any("已有 Refresh" in p for p in has_rt))
         self.assertTrue(any("未探测 Refresh" in p for p in no_rt))
 
+
+class OpsColumnLayoutContractTest(unittest.TestCase):
+    def test_ops_column_narrower_with_token_outline_buttons(self):
+        css = (ROOT / "web/style.css").read_text(encoding="utf-8")
+        col = css.split("th.col-act, td.col-act {", 1)[1].split("}", 1)[0]
+        self.assertIn("196px", col)
+        self.assertNotIn("248px", col)
+        wrap = css.split(".act-wrap .btn {", 1)[1].split("}", 1)[0]
+        self.assertIn("padding: 0 4px", wrap)
+        self.assertIn(".act-wrap .btn.token {", css)
+        self.assertIn(".act-wrap .btn.copy {", css)
+        js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+        main = js.split("function rowMainActions(", 1)[1].split("\n}", 1)[0]
+        self.assertIn('act: "showToken"', main)
+        self.assertIn('act: "copy"', main)
+        self.assertIn('cls: "copy"', main)
+        icons = js.split("function ticketMenuGroups(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("showToken", icons)
+        self.assertNotIn('"copy"', icons)
+        self.assertNotIn("'copy'", icons)
 
 class TagFilterUiContractTest(unittest.TestCase):
     def test_my_categories_controls_exist(self):

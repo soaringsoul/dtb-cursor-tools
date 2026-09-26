@@ -28,9 +28,9 @@ echo "   Nuitka 打包 $APP_NAME → .dmg"
 echo "==================================================="
 echo "Python：$($PY --version 2>&1)  ($PY)"
 
-VER="$($PY -c 'import sand_patch; print(sand_patch.TOOL_VERSION)')"
+VER="$($PY -c 'from app.sand_patch import TOOL_VERSION; print(TOOL_VERSION)')"
 if [ -z "$VER" ]; then
-  echo "[X] 读不到 TOOL_VERSION（确认 sand_patch.py 在同目录）"
+  echo "[X] 读不到 TOOL_VERSION（确认 app/sand_patch.py 在仓库里）"
   exit 1
 fi
 echo "版本 = $VER"
@@ -82,7 +82,7 @@ python -m nuitka \
   --enable-plugin=pywebview \
   --include-data-dir=web=web \
   --include-module=webview.platforms.cocoa \
-  --nofollow-import-to=tests,preview_server,unittest \
+  --nofollow-import-to=tests,app.preview_server,unittest \
   --company-name="夜雨微寒" \
   --product-name="$APP_NAME" \
   --product-version="$VER" \
@@ -91,7 +91,8 @@ python -m nuitka \
   --jobs="$JOBS" \
   --lto=no \
   "${ICON_ARG[@]}" \
-  app.py
+  --include-package=app \
+  app/__main__.py
 
 APP_PATH=""
 if [ -d "nuitka-out/${APP_NAME}.app" ]; then

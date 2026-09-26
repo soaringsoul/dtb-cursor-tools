@@ -14,9 +14,9 @@ import threading
 import time
 from typing import Any, Callable
 
-import cloud_agents
-from accounts import _dpapi
-from cloud_agents import ApiError
+from app import cloud_agents
+from app.accounts import _dpapi
+from app.cloud_agents import ApiError
 
 _JWT_PREFIX = "eyJ"
 
@@ -223,7 +223,7 @@ class ApiKeyStore:
         text: str,
         whoami_fn: Callable[[str], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        from cloud_agents import whoami as default_whoami
+        from app.cloud_agents import whoami as default_whoami
 
         fn = whoami_fn or default_whoami
         if (text or "").strip():

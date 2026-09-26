@@ -6,7 +6,7 @@ import socketserver
 import unittest
 from unittest.mock import patch
 
-import app
+import app.desktop as app
 
 
 class QuietLocalHttpTest(unittest.TestCase):

@@ -489,9 +489,6 @@ function guardPill(a) {
 
 function sessionPills(a, st) {
   const bits = [];
-  if (localUserId && a.id === localUserId) {
-    bits.push(`<span class="pill info mini" title="本机 Cursor 当前登录的是这个号">本机</span>`);
-  }
   bits.push(guardPill(a));
   if (st && st.alive === false) return bits.join("");
   if (!st || !Object.prototype.hasOwnProperty.call(st, "sessionCount")) return bits.join("");
@@ -1993,6 +1990,7 @@ function rowMainActions(a, st) {
   const g = guardStatus[a.id];
   const guarding = !!(g && g.running);
   const dis = !!busy;
+  const tokenOn = rowTokensOn(a.id);
   return [
     { act: "verify", label: "验证", title: "验证有效性并刷新用量 / 订阅", disabled: dis },
     { act: "switch", label: "切号", title: webTok ? "网站会话：切号时自动换客户端登录票（稍慢几秒）" : "切到本机 Cursor", disabled: dis },
@@ -2007,6 +2005,13 @@ function rowMainActions(a, st) {
         : "打开本机保护页：勾选要保留的设备，可批量删除未勾选的，再设置检测间隔自动下线新设备",
     },
     { act: "dashboard", label: "进控制台", title: "用该账号登录态打开隔离浏览器到 Cursor 控制台" },
+    {
+      act: "showToken",
+      label: tokenOn ? "隐藏 Token" : "显示 Token",
+      cls: tokenOn ? "token on" : "token",
+      title: tokenOn ? "隐藏这一行的 Token" : "显示这一行的 Worksession / Refresh token",
+    },
+    { act: "copy", label: "复制 Token", cls: "copy", title: "复制：邮箱----user_id::token", disabled: dis },
   ];
 }
 
@@ -2019,14 +2024,6 @@ function ticketMenuGroups(a, st) {
   if (tokenOn) spec.pills.push("Token 已展开");
   const dis = !!busy;
   const view = [
-    {
-      act: "showToken",
-      tone: "token",
-      label: tokenOn ? "隐藏 Token" : "显示 Token",
-      title: tokenOn ? "隐藏这一行的 Token" : "显示这一行的 Worksession / Refresh token",
-      keepOpen: true,
-    },
-    { act: "copy", tone: "copy", label: "复制", title: "复制：邮箱----user_id::token", disabled: dis },
     { act: "browser", tone: "web", label: "网页领取", title: "用该账号登录态打开隔离浏览器到 Sand 领取页", disabled: dis },
   ];
   if (claimVisible(st)) {
@@ -2043,10 +2040,6 @@ function ticketMenuGroups(a, st) {
 }
 
 const TICKET_ICONS = {
-  showToken:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="3.2"/><path d="M11 13.2 20 4.2M16.5 7.5l2 2M18.2 5.2l2 2"/></svg>',
-  copy:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>',
   browser:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16"/></svg>',
   claim:
@@ -2059,9 +2052,8 @@ function ticketMenuHtml(a, st) {
   const items = ticketMenuGroups(a, st).groups.flatMap((g) => g.items);
   const buttons = items
     .map((b) => {
-      const on = b.act === "showToken" && rowTokensOn(a.id) ? " on" : "";
       return (
-        `<button type="button" class="ico ${esc(b.tone || "")}${on}" data-act="${esc(b.act)}" data-id="${esc(a.id)}"` +
+        `<button type="button" class="ico ${esc(b.tone || "")}" data-act="${esc(b.act)}" data-id="${esc(a.id)}"` +
         `${b.disabled ? " disabled" : ""}` +
         ` title="${esc(b.title || b.label)}" aria-label="${esc(b.label)}">` +
         `${TICKET_ICONS[b.act] || ""}</button>`
@@ -2315,7 +2307,7 @@ function planTags(st) {
 }
 
 // 打开列表时按订阅到期时间升序（更早到期的在前）。点「时间」或「订阅到期」表头切换升降序。
-// 按到期时间排序时不把本机登录账号钉在最上面。点其它表头：本机账号仍在最上；Bot 用量高的在前；导入时间新的在前。
+// 本机当前登录账号在任何排序下都钉在最上面；其余按到期时间、Bot 用量或导入时间排。
 function sortRank(a) {
   const st = rowState[a.id];
   if (st && st.alive === false) return [2, 0];
@@ -2327,11 +2319,9 @@ function orderedAccounts() {
   return accounts
     .map((a, i) => ({ a, i }))
     .sort((x, y) => {
-      if (listSort.key !== "remain") {
-        const px = localUserId && x.a.id === localUserId ? 0 : 1;
-        const py = localUserId && y.a.id === localUserId ? 0 : 1;
-        if (px !== py) return px - py;
-      }
+      const px = localUserId && x.a.id === localUserId ? 0 : 1;
+      const py = localUserId && y.a.id === localUserId ? 0 : 1;
+      if (px !== py) return px - py;
       const cmp = compareAccounts(x.a, y.a, x.i, y.i);
       if (listSort.key === "remain") return cmp;
       return listSort.dir < 0 ? -cmp : cmp;
@@ -2370,10 +2360,14 @@ function render() {
       const dead = st && st.alive === false;
       const dis = busy ? " disabled" : "";
       const guarding = !!(guardStatus[a.id] && guardStatus[a.id].running);
-      const rowCls = [dead ? "dead" : "", guarding ? "guarding" : ""].filter(Boolean).join(" ");
+      const isLocal = !!(localUserId && a.id === localUserId);
+      const localTag = isLocal
+        ? `<span class="pill local-now" title="本机 Cursor 当前登录的是这个号">本机登录中</span>`
+        : "";
+      const rowCls = [dead ? "dead" : "", guarding ? "guarding" : "", isLocal ? "is-local" : ""].filter(Boolean).join(" ");
       return `<tr data-id="${esc(a.id)}"${rowCls ? ` class="${rowCls}"` : ""}>
         <td class="col-chk"><input type="checkbox" class="rowchk" data-id="${esc(a.id)}"${checked}${dis} /></td>
-        <td><div class="acct"><span class="avatar" aria-hidden="true">${esc(acctInitial(mail))}</span><div class="acct-main"><div class="mail-line"><span class="mail">${esc(mail)}</span>${planTags(st)}</div><div class="uid">${esc(a.id)}</div>${meta}
+        <td><div class="acct"><span class="avatar" aria-hidden="true">${esc(acctInitial(mail))}</span><div class="acct-main"><div class="mail-line"><span class="mail">${esc(mail)}</span>${planTags(st)}${localTag}</div><div class="uid">${esc(a.id)}</div>${meta}
           <div class="row-menu"><button type="button" class="btn tiny" data-act="menu" data-id="${esc(a.id)}" title="全部操作">操作 ▾</button></div></div></div></td>
         <td>${expiryCell(a, st)}</td>
         <td class="col-quota">${quotaCell(st)}</td>
@@ -4138,6 +4132,15 @@ async function boot() {
     try { await bridge.mark_ui_ready(); } catch (e) {}
   }
   $("btnHelp").addEventListener("click", () => showHelp(false));
+  const qqGroup = $("qqGroup");
+  if (qqGroup) {
+    qqGroup.addEventListener("click", (e) => {
+      const bridge = window.pywebview && window.pywebview.api;
+      if (!bridge || typeof bridge.open_external !== "function") return;
+      e.preventDefault();
+      bridge.open_external(qqGroup.href);
+    });
+  }
   $("btnToggleImport").addEventListener("click", toggleImportPanel);
   const btnHideNotice = $("btnHideNotice");
   if (btnHideNotice) {
