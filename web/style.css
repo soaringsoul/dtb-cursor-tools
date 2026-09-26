@@ -870,12 +870,29 @@ button.pill:disabled { cursor: default; }
 #guardCard .drawer-head {
   flex: none;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--line);
+  padding: 12px 16px 0;
   background: var(--surface);
+}
+.guard-account-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 8px 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.guard-account-info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
 }
 #guardCard .drawer-title { min-width: 0; }
 #guardCard .drawer-title h2 {
@@ -896,58 +913,107 @@ button.pill:disabled { cursor: default; }
   background: var(--guard);
 }
 #guardCard .drawer-email {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--muted);
+  margin: 0;
+  flex: none;
+  max-width: 240px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.guard-brief {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 0;
+  min-width: 0;
+}
+.guard-brief-exp { flex: none; }
+.guard-brief-exp .hint { margin-top: 2px; }
+.guard-brief-quota { flex: 1 1 280px; max-width: 420px; min-width: 0; }
+.guard-brief-quota .pools { min-width: 0; gap: 4px; }
 .guard-account {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 0;
+  flex: none;
   font-size: 12px;
-  color: var(--muted);
+  line-height: 20px;
+  color: var(--ink-secondary);
 }
 #guardAccountSelect {
   height: var(--control-h);
-  min-width: 220px;
-  max-width: 360px;
+  min-width: 240px;
+  max-width: 320px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0 8px;
+  padding: 0 11px;
   background: var(--surface);
   color: var(--ink);
   font: inherit;
+  transition: border-color var(--dur) ease, box-shadow var(--dur) ease;
 }
+#guardAccountSelect:hover { border-color: var(--brand); }
+#guardAccountSelect:focus { outline: none; border-color: var(--brand); box-shadow: var(--focus-ring); }
 #guardCard .drawer-head-acts {
   display: flex;
   flex: none;
   align-items: center;
   gap: 8px;
 }
+.guard-tools-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 16px 0;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+}
 #guardCard .drawer-tools {
-  flex: none;
+  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px 0;
+  padding: 0;
 }
 #guardCard .drawer-tools.is-running .guard-interval { display: none; }
 #guardCard .guard-sub {
   flex: none;
-  margin: 8px 16px 0;
+  margin: 10px 16px 0;
+  color: var(--ink-secondary);
 }
 #guardCard .guard-body {
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
   overflow: auto;
-  padding: 10px 16px 16px;
+  padding: 8px 16px 16px;
 }
+#guardCard .session-list {
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+#guardCard .session-list li {
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+}
+#guardCard .session-list li:last-child { border-bottom: 0; }
+#guardCard .session-list li:hover { background: #fafafa; }
+#guardCard .session-row.selectable.kept:hover { background: var(--success-bg); }
+#guardCard .guard-toolbar { margin-bottom: 8px; }
 #guardCard .guard-stats { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 #paneGuard #guardCard {
   display: flex;
@@ -1287,6 +1353,8 @@ tr.guarding td:nth-child(2) { box-shadow: inset 3px 0 0 var(--guard); }
 .modal.quit > .hint.danger-note { color: var(--danger-dark); font-weight: 600; }
 #switchConfirmBody { display: grid; gap: 8px; }
 #switchConfirmBody .hint { margin: 0; font-size: 14px; color: var(--ink-secondary); }
+#switchConfirmBody .hint.emph { color: var(--brand-heavy); font-weight: 650; }
+#switchConfirmBody .hint.danger-note { color: var(--danger-dark); font-weight: 650; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--surface-soft); }

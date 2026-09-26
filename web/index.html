@@ -156,18 +156,17 @@
       <div class="drawer-head">
         <div class="drawer-title">
           <h2 id="guardTitle">本机保护</h2>
-          <label class="guard-account" for="guardAccountSelect">付费账号
-            <select id="guardAccountSelect" title="只列出已验证的付费账号：Pro / Pro+ / Ultra / Team / Business">
-              <option value="">选择付费账号</option>
-            </select>
-          </label>
-          <p class="drawer-email" id="guardEmail"></p>
         </div>
-        <div class="drawer-head-acts">
-          <button class="btn" id="guardCancel" title="返回账号列表，不影响已启动的保护">返回列表</button>
-          <button class="btn guard" id="guardPinLocal" hidden title="用本机 Cursor 登录票认 IDE，必要时连同本工具会话一起保留">一键本机保护</button>
-          <button class="btn primary" id="guardStart">启动保护</button>
-          <button class="btn danger" id="guardStop" hidden>停止保护</button>
+      </div>
+      <div class="guard-account-row">
+        <label class="guard-account" for="guardAccountSelect">付费账号
+          <select id="guardAccountSelect" title="只列出已验证的付费账号：Pro / Pro+ / Ultra / Team / Business">
+            <option value="">选择付费账号</option>
+          </select>
+        </label>
+        <div class="guard-account-info">
+          <p class="drawer-email" id="guardEmail"></p>
+          <div class="guard-brief" id="guardBrief" hidden></div>
         </div>
       </div>
       <div class="empty" id="guardEmpty">
@@ -176,6 +175,7 @@
         <span>下拉框只列出已验证的 Pro / Pro+ / Ultra / Team。也可以从账号列表点「本机保护」。离开本页不会停止已启动的保护。</span>
       </div>
       <div id="guardWork" hidden>
+      <div class="guard-tools-row">
       <div class="drawer-tools" id="guardOpts">
         <button class="btn tiny" id="guardRefresh" title="重新拉取云端登录设备">刷新</button>
         <button class="btn tiny" id="guardProbe" title="从本机 Cursor 或已存数据探测并记录 refresh_token">探测票</button>
@@ -188,6 +188,13 @@
           <input type="number" id="guardInterval" min="5" max="3600" step="5" value="30" />
           秒
         </label>
+      </div>
+      <div class="drawer-head-acts">
+        <button class="btn" id="guardCancel" title="返回账号列表，不影响已启动的保护">返回列表</button>
+        <button class="btn guard" id="guardPinLocal" hidden title="用本机 Cursor 登录票认 IDE，必要时连同本工具会话一起保留">一键本机保护</button>
+        <button class="btn primary" id="guardStart">启动保护</button>
+        <button class="btn danger" id="guardStop" hidden>停止保护</button>
+      </div>
       </div>
       <p class="hint guard-diff" id="guardDiff" hidden></p>
       <p class="hint guard-sub" id="guardSub"></p>
@@ -342,6 +349,18 @@
       <div class="modal-actions">
         <button type="button" class="btn" id="switchConfirmCancel">取消</button>
         <button type="button" class="btn primary" id="switchConfirmOk">确认切号</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask nested" id="refreshTicketMask" hidden>
+    <div class="modal glass quit" role="dialog" aria-labelledby="refreshTicketTitle">
+      <h2 id="refreshTicketTitle">刷新登录票确认</h2>
+      <p class="hint" id="refreshTicketBody"></p>
+      <p class="hint danger-note">会向官方换一张新登录票，并新开一台 Desktop App。不会踢掉现有设备。</p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="refreshTicketCancel">取消</button>
+        <button type="button" class="btn primary" id="refreshTicketOk">确认刷新</button>
       </div>
     </div>
   </div>

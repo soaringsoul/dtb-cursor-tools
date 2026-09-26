@@ -1134,6 +1134,7 @@ function renderGuardModal() {
   if (!id) {
     const diff = $("guardDiff");
     if (diff) diff.hidden = true;
+    paintGuardBrief();
     return;
   }
   const g = guardStatus[id] || {};
@@ -1150,6 +1151,7 @@ function renderGuardModal() {
   $("guardTitle").textContent = "本机保护";
   const emailEl = $("guardEmail");
   if (emailEl) emailEl.textContent = m.email || id || "";
+  paintGuardBrief();
   $("guardStart").hidden = m.running;
   $("guardStop").hidden = !m.running;
   const pinBtn = $("guardPinLocal");
@@ -1487,6 +1489,37 @@ async function guardProbeTicket() {
   if (!id) return;
   await probeRefreshOne(id);
   syncGuardSwapButtons(guardModal);
+}
+
+function paintGuardBrief() {
+  const el = $("guardBrief");
+  if (!el) return;
+  const id = guardModal.id;
+  const a = accounts.find((x) => x.id === id);
+  if (!a) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML =
+    `<div class="guard-brief-exp">${expiryCell(a, rowState[id])}</div>` +
+    `<div class="guard-brief-quota">${quotaCell(rowState[id])}</div>`;
+}
+
+function openRefreshTicketConfirm() {
+  const id = guardModal.id;
+  if (!id) return;
+  const a = accounts.find((x) => x.id === id);
+  const body = $("refreshTicketBody");
+  if (body) body.textContent = `确定为 ${accountMail(a, id)} 刷新登录票？`;
+  const mask = $("refreshTicketMask");
+  if (mask) mask.hidden = false;
+}
+
+function hideRefreshTicketConfirm() {
+  const mask = $("refreshTicketMask");
+  if (mask) mask.hidden = true;
 }
 
 async function guardRefreshTicket(kick) {
@@ -2358,6 +2391,7 @@ function render() {
   syncFilterChrome();
   updateStats();
   paintGuardAccountSelect();
+  paintGuardBrief();
 }
 
 function syncSelectAll() {
@@ -2452,8 +2486,14 @@ function applyStatus(id, res) {
     return;
   }
   applyEmail(id, res.email);
-  // 已开通 = 资格接口说已授予（权威），或用量接口有非零 Bot 额度（兜底）。
-  const unlocked = !!res.unlocked || res.accessGranted === true;
+  // 用量/套餐接口这次没带回数据时，不能把上次验证的套餐和额度盖掉，
+  // 否则付费账号会从「付费账户」里消失，看起来像变回未验证。
+  const field = (key) => (res[key] == null ? prev[key] : res[key]);
+  // 资格字段这次没返回时，沿用上次的开通状态，避免一次残缺响应把「已开通」打成未验证。
+  const unlocked =
+    res.unlocked == null && res.accessGranted == null
+      ? prev.kind === "ok" || prev.accessGranted === true
+      : !!res.unlocked || res.accessGranted === true;
   const keepCard = !unlocked && prev.kind === "card";
   rowState[id] = {
     kind: unlocked ? "ok" : keepCard ? "card" : "idle",
@@ -2465,42 +2505,39 @@ function applyStatus(id, res) {
     aliveReason: res.aliveReason !== undefined ? res.aliveReason : prev.aliveReason,
     checkedAt: res.checkedAt || prev.checkedAt,
     // Sand 资格（权威口径）
-    accessGranted: res.accessGranted,
-    accessState: res.accessState,
-    blockReason: res.blockReason,
-    planGrantsAccess: res.planGrantsAccess,
-    // 池 1：Bot 周用量
-    percent: res.percent,
-    hasAvailableUsage: res.hasAvailableUsage,
-    nextReset: res.nextReset,
-    nextResetEstimated: res.nextResetEstimated,
-    periodStart: res.periodStart,
-    // 池 2 / 3：Auto / 高级(API)，账单月
-    autoPercent: res.autoPercent,
-    apiPercent: res.apiPercent,
-    totalPercent: res.totalPercent,
-    includedUsedCents: res.includedUsedCents,
-    includedLimitCents: res.includedLimitCents,
-    cycleTotalCents: res.cycleTotalCents,
-    onDemandEnabled: res.onDemandEnabled,
-    onDemandUsedCents: res.onDemandUsedCents,
-    // 套餐 / 订阅
-    teamId: res.teamId,
-    membership: res.membership,
-    unlimited: res.unlimited,
-    billingCycleStart: res.billingCycleStart,
-    billingCycleEnd: res.billingCycleEnd,
-    subscriptionStatus: res.subscriptionStatus,
-    pendingCancellationDate: res.pendingCancellationDate,
-    isYearlyPlan: res.isYearlyPlan,
-    tokenExp: res.tokenExp,
-    tierLabel: res.tierLabel,
-    spendUsd: res.spendUsd,
-    teamPercent: res.teamPercent,
-    sessions: Array.isArray(res.sessions) ? res.sessions : [],
-    sessionCount: res.sessionCount,
-    sessionClientCount: res.sessionClientCount,
-    sessionWebCount: res.sessionWebCount,
+    accessGranted: field("accessGranted"),
+    accessState: field("accessState"),
+    blockReason: field("blockReason"),
+    planGrantsAccess: field("planGrantsAccess"),
+    percent: field("percent"),
+    hasAvailableUsage: field("hasAvailableUsage"),
+    nextReset: field("nextReset"),
+    nextResetEstimated: field("nextResetEstimated"),
+    periodStart: field("periodStart"),
+    autoPercent: field("autoPercent"),
+    apiPercent: field("apiPercent"),
+    totalPercent: field("totalPercent"),
+    includedUsedCents: field("includedUsedCents"),
+    includedLimitCents: field("includedLimitCents"),
+    cycleTotalCents: field("cycleTotalCents"),
+    onDemandEnabled: field("onDemandEnabled"),
+    onDemandUsedCents: field("onDemandUsedCents"),
+    teamId: field("teamId"),
+    membership: field("membership"),
+    unlimited: field("unlimited"),
+    billingCycleStart: field("billingCycleStart"),
+    billingCycleEnd: field("billingCycleEnd"),
+    subscriptionStatus: field("subscriptionStatus"),
+    pendingCancellationDate: field("pendingCancellationDate"),
+    isYearlyPlan: field("isYearlyPlan"),
+    tokenExp: field("tokenExp"),
+    tierLabel: field("tierLabel"),
+    spendUsd: field("spendUsd"),
+    teamPercent: field("teamPercent"),
+    sessions: Array.isArray(res.sessions) ? res.sessions : prev.sessions || [],
+    sessionCount: field("sessionCount"),
+    sessionClientCount: field("sessionClientCount"),
+    sessionWebCount: field("sessionWebCount"),
     sessionError: res.sessionError || "",
     sessionWaf: !!res.sessionWaf,
   };
@@ -2752,6 +2789,7 @@ function loginBotConfirmCopy(email, resetMid, webTok, refreshFirst) {
   }
   if (webTok) lines.push("这是网站会话票，会先换成客户端票再写入 Grok Bot。");
   if (resetMid) lines.push("「切号重置机器码」对登录 Bot 无效：不会改 Cursor 的机器码。");
+  lines.push("如果开着代理或 TUN，Grok Bot 会一直停在「正在重新连接你的电脑」。请先关掉代理，或把 Grok Bot 设为直连。");
   return lines;
 }
 
@@ -2814,7 +2852,12 @@ function paintSwitchConfirmBody() {
   const body = $("switchConfirmBody");
   if (body) {
     body.innerHTML = copyFn(accountMail(a, id), resetMid, webTok, refreshFirst)
-      .map((line) => `<p class="hint">${esc(line)}</p>`)
+      .map((line) => {
+        let cls = "hint";
+        if (line.indexOf("重新连接你的电脑") >= 0) cls = "hint danger-note";
+        else if (line.indexOf("不会关闭 Cursor") >= 0) cls = "hint emph";
+        return `<p class="${cls}">${esc(line)}</p>`;
+      })
       .join("");
   }
   paintSwitchConfirmChrome();
@@ -4246,6 +4289,10 @@ async function boot() {
       hideSwitchConfirm();
       return;
     }
+    if ($("refreshTicketMask") && !$("refreshTicketMask").hidden) {
+      hideRefreshTicketConfirm();
+      return;
+    }
     if ($("guardStartMask") && !$("guardStartMask").hidden) {
       hideGuardStartConfirm();
       return;
@@ -4264,7 +4311,22 @@ async function boot() {
   const guardProbe = $("guardProbe");
   if (guardProbe) guardProbe.addEventListener("click", () => guardProbeTicket());
   const guardRefreshLogin = $("guardRefreshLogin");
-  if (guardRefreshLogin) guardRefreshLogin.addEventListener("click", () => guardRefreshTicket(false));
+  if (guardRefreshLogin) guardRefreshLogin.addEventListener("click", openRefreshTicketConfirm);
+  const refreshTicketCancel = $("refreshTicketCancel");
+  if (refreshTicketCancel) refreshTicketCancel.addEventListener("click", hideRefreshTicketConfirm);
+  const refreshTicketOk = $("refreshTicketOk");
+  if (refreshTicketOk) {
+    refreshTicketOk.addEventListener("click", () => {
+      hideRefreshTicketConfirm();
+      guardRefreshTicket(false);
+    });
+  }
+  const refreshTicketMask = $("refreshTicketMask");
+  if (refreshTicketMask) {
+    refreshTicketMask.addEventListener("click", (e) => {
+      if (e.target === refreshTicketMask) hideRefreshTicketConfirm();
+    });
+  }
   const guardRefreshKick = $("guardRefreshKick");
   if (guardRefreshKick) guardRefreshKick.addEventListener("click", () => guardRefreshTicket(true));
   $("guardDetect").addEventListener("click", openLoginDetect);

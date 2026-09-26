@@ -28,6 +28,9 @@ def confirm_lines(
         lines.append("这是网站会话票，会先换成客户端票再写入 Grok Bot。")
     if reset_machine_id:
         lines.append("「切号重置机器码」对登录 Bot 无效：不会改 Cursor 的机器码。")
+    lines.append(
+        "如果开着代理或 TUN，Grok Bot 会一直停在「正在重新连接你的电脑」。请先关掉代理，或把 Grok Bot 设为直连。"
+    )
     del kick_old_tool  # 复选框 label 承担说明，确认正文不重复
     return lines
 
