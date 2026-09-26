@@ -120,7 +120,7 @@ $PB -c "Add :NSHighResolutionCapable bool true" "$PLIST" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_PATH" || true
 xattr -cr "$APP_PATH" 2>/dev/null || true
 
-echo "[6/6] 生成 $DMG（含 Applications 拖放安装）..."
+echo "[6/6] 生成 ${DMG}（含 Applications 拖放安装）..."
 DMG_STAGE="nuitka-out/dmg-stage"
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE"
